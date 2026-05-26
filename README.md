@@ -40,7 +40,9 @@ go run ./cmd/mdpoke -- README.md
 
 ## Homebrew
 
-The project can be distributed through Homebrew once tagged releases are available. The expected path is to publish release archives, add a formula that builds `./cmd/mdpoke`, and then install it with `brew install BumpeiShimada/tap/mdpoke`.
+```sh
+brew install BumpeiShimada/tap/mdpoke
+```
 
 ## Keys
 
