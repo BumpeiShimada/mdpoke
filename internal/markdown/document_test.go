@@ -1,0 +1,292 @@
+package markdown
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+func TestParseStructureExtractsOutlineTree(t *testing.T) {
+	source := []byte(strings.Join([]string{
+		"# Title",
+		"",
+		"## First",
+		"### Child",
+		"## Second",
+	}, "\n"))
+
+	outline, _ := ParseStructure(source)
+
+	if len(outline) != 4 {
+		t.Fatalf("expected 4 headings, got %d", len(outline))
+	}
+
+	tests := []struct {
+		name     string
+		index    int
+		level    int
+		text     string
+		line     int
+		parent   int
+		children []int
+	}{
+		{name: "root", index: 0, level: 1, text: "Title", line: 1, parent: -1, children: []int{1, 3}},
+		{name: "first", index: 1, level: 2, text: "First", line: 3, parent: 0, children: []int{2}},
+		{name: "child", index: 2, level: 3, text: "Child", line: 4, parent: 1},
+		{name: "second", index: 3, level: 2, text: "Second", line: 5, parent: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := outline[tt.index]
+			if got.Level != tt.level || got.Text != tt.text || got.Line != tt.line || got.Parent != tt.parent {
+				t.Fatalf("heading mismatch: got %#v", got)
+			}
+			if len(got.Children) != len(tt.children) {
+				t.Fatalf("children mismatch: got %v, want %v", got.Children, tt.children)
+			}
+			for i := range tt.children {
+				if got.Children[i] != tt.children[i] {
+					t.Fatalf("children mismatch: got %v, want %v", got.Children, tt.children)
+				}
+			}
+		})
+	}
+}
+
+func TestParseStructureExtractsLinks(t *testing.T) {
+	source := []byte("Read [the docs](docs/plan.md) and [site](https://example.com), plus <https://example.com/autolink-fixture>.\n")
+
+	_, links := ParseStructure(source)
+
+	if len(links) != 3 {
+		t.Fatalf("expected 3 links, got %d", len(links))
+	}
+	if links[0].Text != "the docs" || links[0].URL != "docs/plan.md" || links[0].Line != 1 {
+		t.Fatalf("unexpected first link: %#v", links[0])
+	}
+	if links[1].Text != "site" || links[1].URL != "https://example.com" || links[1].Line != 1 {
+		t.Fatalf("unexpected second link: %#v", links[1])
+	}
+	if links[2].Text != "https://example.com/autolink-fixture" || links[2].URL != "https://example.com/autolink-fixture" || links[2].Line != 1 {
+		t.Fatalf("unexpected autolink: %#v", links[2])
+	}
+	if links[0].StartColumn >= links[0].EndColumn {
+		t.Fatalf("expected link columns to increase: %#v", links[0])
+	}
+}
+
+func TestStripANSIRemovesOSCHyperlinks(t *testing.T) {
+	input := "\x1b]8;;https://example.com\aExample\x1b]8;;\a"
+	if got := StripANSI(input); got != "Example" {
+		t.Fatalf("StripANSI() = %q, want Example", got)
+	}
+}
+
+func TestRenderKeepsNestedBulletsIndented(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"- parent",
+		"  - child",
+		"    - grandchild",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(StripANSI(rendered), "\n")
+	var child, grandchild string
+	for _, line := range lines {
+		if strings.Contains(line, "child") && !strings.Contains(line, "grandchild") {
+			child = line
+		}
+		if strings.Contains(line, "grandchild") {
+			grandchild = line
+		}
+	}
+
+	if child == "" || grandchild == "" {
+		t.Fatalf("expected nested bullet lines in rendered output:\n%s", StripANSI(rendered))
+	}
+	if leadingSpaces(grandchild) <= leadingSpaces(child) {
+		t.Fatalf("expected grandchild to be more indented than child:\n%s", StripANSI(rendered))
+	}
+}
+
+func TestRenderOrderedListKeepsSpaceAfterMarker(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"1. First item",
+		"2. `code` item",
+		"3. `.env.example` item",
+		"10. Tenth item",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	for _, want := range []string{"1. First item", "2. code item", "3. .env.example item", "4. Tenth item"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected ordered list marker spacing %q:\n%s", want, plain)
+		}
+	}
+	for _, bad := range []string{"1First item", "2code item", "3.env.example item", "4Tenth item"} {
+		if strings.Contains(plain, bad) {
+			t.Fatalf("ordered list marker spacing collapsed as %q:\n%s", bad, plain)
+		}
+	}
+}
+
+func TestRenderStylesHeadingsAndCodeBlocks(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"# H1",
+		"## H2",
+		"### H3",
+		"#### H4",
+		"##### H5",
+		"###### H6",
+		"",
+		"```go",
+		"func main() {}",
+		"```",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	for _, want := range []string{"H1", "## H2", "### H3", "#### H4", "##### H5", "###### H6", "╭─ go", "╰"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected rendered output to contain %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestRenderInlineCodeDoesNotAddPaddingSpaces(t *testing.T) {
+	rendered, err := Render("before `code` after\n", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	if !strings.Contains(plain, "before code after") {
+		t.Fatalf("expected inline code without added padding spaces:\n%s", plain)
+	}
+	if strings.Contains(plain, "before  code  after") {
+		t.Fatalf("inline code should not add spaces around code text:\n%s", plain)
+	}
+}
+
+func TestRenderCodeBlockBorderFitsLongestLine(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"```go",
+		"short",
+		"longerLine := true",
+		"```",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(StripANSI(rendered), "\n")
+	topWidth := 0
+	bottomWidth := 0
+	for _, line := range lines {
+		if strings.Contains(line, "╭─ go") {
+			topWidth = displayWidth(line)
+		}
+		if strings.Contains(line, "╰") {
+			bottomWidth = displayWidth(line)
+		}
+	}
+
+	if topWidth == 0 || bottomWidth == 0 {
+		t.Fatalf("expected code block borders:\n%s", StripANSI(rendered))
+	}
+	wantWidth := len(customBlockIndent) + len("longerLine := true") + 2
+	if topWidth != wantWidth || bottomWidth != wantWidth {
+		t.Fatalf("expected borders to fit the longest code line, got top=%d bottom=%d want=%d:\n%s", topWidth, bottomWidth, wantWidth, StripANSI(rendered))
+	}
+}
+
+func TestRenderCodeBlockWrapsLongLines(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"```text",
+		"abcdefghijklmnopqrstuvwxyz0123456789",
+		"```",
+	}, "\n"), 28)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, line := range strings.Split(StripANSI(rendered), "\n") {
+		if displayWidth(line) > 28 {
+			t.Fatalf("expected rendered code line to fit width, got %d for %q:\n%s", displayWidth(line), line, StripANSI(rendered))
+		}
+	}
+}
+
+func TestRenderTableUsesContentSizedColumns(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"| A | Longer |",
+		"| --- | --- |",
+		"| x | yy |",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	maxLineWidth := 0
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "│") || strings.Contains(line, "┌") || strings.Contains(line, "└") {
+			maxLineWidth = max(maxLineWidth, displayWidth(line))
+		}
+	}
+	if maxLineWidth == 0 {
+		t.Fatalf("expected rendered table:\n%s", plain)
+	}
+	if maxLineWidth >= 32 {
+		t.Fatalf("expected table to use content-sized columns, got max width %d:\n%s", maxLineWidth, plain)
+	}
+}
+
+func TestRenderTableWrapsWhenColumnIsTooWide(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"| Name | Description |",
+		"| --- | --- |",
+		"| alpha | abcdefghijklmnopqrstuvwxyz0123456789 |",
+	}, "\n"), 36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	descriptionLines := 0
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "abcdef") || strings.Contains(line, "uvwxyz") || strings.Contains(line, "012345") {
+			descriptionLines++
+		}
+		if displayWidth(line) > 36 {
+			t.Fatalf("expected wrapped table line to fit width, got %d for %q:\n%s", displayWidth(line), line, plain)
+		}
+	}
+	if descriptionLines < 2 {
+		t.Fatalf("expected long table cell to wrap across lines:\n%s", plain)
+	}
+}
+
+func leadingSpaces(s string) int {
+	count := 0
+	for _, r := range s {
+		if r != ' ' {
+			return count
+		}
+		count++
+	}
+	return count
+}
+
+func displayWidth(s string) int {
+	return lipgloss.Width(s)
+}
