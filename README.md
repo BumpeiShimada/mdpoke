@@ -1,6 +1,6 @@
 # mdpoke
 
-`mdpoke` is a terminal Markdown viewer and navigator written in Go.
+`mdpoke` is a terminal Markdown viewer for poking around long Markdown documents.
 
 It focuses on reading one Markdown file at a time, with a main rendered document view, an optional heading outline, search, link focus, link copy, drag-selected text copy, and a searchable key guide.
 
@@ -35,7 +35,7 @@ mdpoke README.md
 When developing locally without installing:
 
 ```sh
-go run ./cmd/mdpoke -- docs/plan.md
+go run ./cmd/mdpoke -- README.md
 ```
 
 ## Homebrew
