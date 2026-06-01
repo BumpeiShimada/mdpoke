@@ -179,6 +179,9 @@ func mdpokeStyleJSON() string {
   "list": {
     "level_indent": 2
   },
+  "item": {
+    "block_prefix": "• "
+  },
   "enumeration": {
     "block_prefix": ". "
   },
