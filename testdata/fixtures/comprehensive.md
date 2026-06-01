@@ -148,6 +148,14 @@ Task list:
 - [ ] Pending fixture case
 - [ ] Another task with [task link](#links)
 
+Checkbox toggle cases:
+
+- [ ] Toggle this pending fixture checkbox with tab then space or enter
+- [x] Toggle this completed fixture checkbox by clicking the checkbox
+- [ ] Toggle this nested fixture checkbox group
+    - [ ] Nested pending checkbox
+    - [x] Nested completed checkbox
+
 Inline code at the start of bullet items:
 
 - `aaa`

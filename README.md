@@ -51,20 +51,21 @@ brew install BumpeiShimada/tap/mdpoke
 | `j` / `k`, arrow keys | Scroll or move the outline selection |
 | `g` / `G` | Jump to top / bottom |
 | `o` | Toggle the outline pane |
-| `Enter` | Follow the focused Markdown internal link |
+| `Enter` / `Space` | Toggle the focused checkbox |
 | `/` | Search rendered text |
 | `n` / `N` | Move to next / previous search match |
-| `Tab` / `Shift+Tab` | Focus next / previous link |
+| `Tab` / `Shift+Tab` | Focus next / previous checkbox |
 | `y` | Copy selected text, the focused link, or the first link on the current line |
 | Mouse wheel | Scroll |
 | Drag | Select rendered text; press `y` after release to copy it |
-| Click | Copy an external link or confirm an internal Markdown jump |
+| Click | Toggle a checkbox, copy an external link, or confirm an internal Markdown jump |
 | `?` | Open the searchable key guide |
 | `Esc` | Cancel the current mode or clear highlights/selection |
 | `q` / `Ctrl+C` | Quit |
 
-Internal Markdown anchors such as `#heading-name` can be followed with `Enter`.
-External links are intentionally copy-first: focus them with the keyboard and press `y`, or click them to copy.
+Markdown task checkboxes can be focused with `Tab` and toggled with `Enter` or `Space`.
+Internal Markdown anchors such as `#heading-name` can be followed by clicking and confirming the jump.
+External links are intentionally copy-first: move to their line and press `y`, or click them to copy.
 You can also drag across rendered document text, release, and press `y` to copy the selected plain text. Copy actions show a short `Copied` popup, which can be closed with any key or an outside click.
 
 ## Scope

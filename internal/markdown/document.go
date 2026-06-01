@@ -185,6 +185,10 @@ func mdpokeStyleJSON() string {
   "enumeration": {
     "block_prefix": ". "
   },
+  "task": {
+    "ticked": "[x] ",
+    "unticked": "[ ] "
+  },
   "table": {
     "center_separator": "┼",
     "column_separator": "│",

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,6 +48,12 @@ type SearchMatch struct {
 	End   int
 }
 
+type taskItem struct {
+	Line    int
+	Checked bool
+	Text    string
+}
+
 type selectionPoint struct {
 	Line   int
 	Column int
@@ -71,6 +78,7 @@ type Model struct {
 	outlineVisible  bool
 	selectedOutline int
 	selectedLink    int
+	selectedTask    int
 	focusedJumpLine int
 	focusedJumpText string
 	focusedOutline  int
@@ -91,6 +99,7 @@ type Model struct {
 	contentLines  []string
 	rawToRendered []int
 	renderedToRaw []int
+	tasks         []taskItem
 	searchQuery   string
 	searchMatches []SearchMatch
 	selectedMatch int
@@ -132,6 +141,7 @@ func New(doc md.Document) Model {
 		height:          26,
 		selectedOutline: -1,
 		selectedLink:    -1,
+		selectedTask:    -1,
 		focusedJumpLine: -1,
 		focusedJumpText: "",
 		focusedOutline:  -1,
@@ -186,6 +196,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOutlineMouse(msg)
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.toggleTaskAtMouse(msg) {
+				return m, nil
+			}
 			if m.beginLineSelection(msg) {
 				return m, nil
 			}
@@ -234,18 +247,22 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clearTransientHighlights()
 		return m, nil
 	case "tab":
-		m.focusNextLink(1)
+		m.focusNextTask(1)
 		return m, nil
 	case "shift+tab":
-		m.focusNextLink(-1)
+		m.focusNextTask(-1)
 		return m, nil
 	case "enter":
+		if m.toggleSelectedTask() {
+			return m, nil
+		}
 		m.followSelection()
 		return m, nil
 	case "y":
 		m.copySelection()
 		return m, nil
 	case " ":
+		m.toggleSelectedTask()
 		return m, nil
 	case "n":
 		m.moveSearchMatch(1)
@@ -425,6 +442,10 @@ func (m *Model) rebuildContent() {
 	m.renderedLines = strings.Split(rendered, "\n")
 	m.contentLines = strings.Split(plain, "\n")
 	m.rawToRendered, m.renderedToRaw = buildLineMaps(m.doc.Raw, m.contentLines)
+	m.tasks = parseTaskItems(m.doc.Raw)
+	if m.selectedTask >= len(m.tasks) {
+		m.selectedTask = -1
+	}
 	m.body.SetContent(m.renderContent())
 	m.outline.SetContent(m.renderOutline())
 }
@@ -457,6 +478,14 @@ func (m Model) renderContent() string {
 		line := m.lineForLink(link)
 		if line >= 0 && line < len(lines) {
 			lines[line] = m.styleFocusedLink(lines[line], link)
+		}
+	}
+
+	if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
+		task := m.tasks[m.selectedTask]
+		line := m.lineForTask(task)
+		if line >= 0 && line < len(lines) {
+			lines[line] = styleFocusedTaskCheckbox(lines[line])
 		}
 	}
 
@@ -634,8 +663,11 @@ func (m Model) guideItems() []string {
 	if m.hasLineSelection() {
 		return []string{"y copy text", "esc clear", "? help"}
 	}
-	if len(m.doc.Links) > 0 {
-		items = append([]string{"tab url focus"}, items...)
+	if len(m.tasks) > 0 {
+		items = append([]string{"tab checkbox"}, items...)
+	}
+	if m.selectedTask >= 0 {
+		items = []string{"space toggle", "enter toggle", "tab next box", "esc exit box"}
 	}
 	if m.selectedLink >= 0 {
 		items = []string{"y copy", "tab next url", "esc exit url"}
@@ -893,8 +925,163 @@ func FindMatches(lines []string, query string) []SearchMatch {
 	return matches
 }
 
+func (m *Model) focusNextTask(delta int) {
+	hadSelection := m.clearLineSelection()
+	m.selectedLink = -1
+
+	if len(m.tasks) == 0 {
+		m.showMessage("No Checkboxes", fmt.Sprintf("No checkboxes in this document.\n\n%s", mutedStyle.Render("press any key to close")))
+		if hadSelection {
+			m.rebuildContent()
+		}
+		return
+	}
+
+	if m.selectedTask < 0 {
+		if delta < 0 {
+			m.selectedTask = len(m.tasks) - 1
+		} else {
+			m.selectedTask = 0
+		}
+	} else {
+		m.selectedTask = (m.selectedTask + delta + len(m.tasks)) % len(m.tasks)
+	}
+
+	task := m.tasks[m.selectedTask]
+	m.status = m.taskStatus(task)
+	m.jumpToRenderedLine(m.lineForTask(task), false)
+	m.rebuildContent()
+}
+
+func (m *Model) toggleSelectedTask() bool {
+	if m.selectedTask < 0 || m.selectedTask >= len(m.tasks) {
+		return false
+	}
+	m.toggleTask(m.selectedTask)
+	return true
+}
+
+func (m *Model) toggleTaskAtMouse(msg tea.MouseMsg) bool {
+	index, ok := m.taskAtMouse(msg)
+	if !ok {
+		return false
+	}
+	m.selectedLink = -1
+	m.selectedTask = index
+	m.toggleTask(index)
+	return true
+}
+
+func (m Model) taskAtMouse(msg tea.MouseMsg) (int, bool) {
+	if len(m.tasks) == 0 || !m.mouseInBody(msg) {
+		return -1, false
+	}
+	renderedLine := m.body.YOffset + msg.Y
+	rawLine := m.rawLineForRendered(renderedLine)
+	for i, task := range m.tasks {
+		if task.Line != rawLine && m.lineForTask(task) != renderedLine {
+			continue
+		}
+		start, end, ok := taskCheckboxColumns(m.contentLines[renderedLine])
+		if ok && msg.X >= start && msg.X < end {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (m *Model) toggleTask(index int) {
+	if index < 0 || index >= len(m.tasks) {
+		return
+	}
+	task := m.tasks[index]
+	lines := strings.Split(m.doc.Raw, "\n")
+	lineIndex := task.Line - 1
+	if lineIndex < 0 || lineIndex >= len(lines) {
+		m.status = "checkbox line not found"
+		return
+	}
+
+	nextLine, ok := toggleTaskLine(lines[lineIndex])
+	if !ok {
+		m.status = "checkbox line not found"
+		return
+	}
+	lines[lineIndex] = nextLine
+	nextRaw := strings.Join(lines, "\n")
+	if strings.TrimSpace(m.doc.Path) != "" {
+		if err := os.WriteFile(m.doc.Path, []byte(nextRaw), 0644); err != nil {
+			m.showMessage("Update Failed", fmt.Sprintf("%v\n\n%s", err, mutedStyle.Render("press any key to close")))
+			m.status = fmt.Sprintf("checkbox update failed: %v", err)
+			return
+		}
+	}
+
+	outline, links := md.ParseStructure([]byte(nextRaw))
+	nextDoc := md.Document{
+		Path:    m.doc.Path,
+		Raw:     nextRaw,
+		Outline: outline,
+		Links:   links,
+	}
+	renderedDoc, err := nextDoc.Render(max(20, m.body.Width-2))
+	if err != nil {
+		m.showMessage("Render Failed", fmt.Sprintf("%v\n\n%s", err, mutedStyle.Render("press any key to close")))
+		m.status = fmt.Sprintf("render failed: %v", err)
+		return
+	}
+
+	m.doc = renderedDoc
+	m.rebuildContent()
+	for i, nextTask := range m.tasks {
+		if nextTask.Line == task.Line {
+			m.selectedTask = i
+			m.status = m.taskStatus(nextTask)
+			return
+		}
+	}
+	m.selectedTask = -1
+}
+
+func (m Model) taskStatus(task taskItem) string {
+	if task.Checked {
+		return "checkbox: checked"
+	}
+	return "checkbox: unchecked"
+}
+
+func (m Model) lineForTask(task taskItem) int {
+	preferred := m.lineForRaw(task.Line)
+	if lineContainsTaskCheckbox(m.contentLines, preferred, task) {
+		return preferred
+	}
+
+	start := max(0, preferred-4)
+	stop := min(len(m.contentLines), preferred+5)
+	for i := start; i < stop; i++ {
+		if lineContainsTaskCheckbox(m.contentLines, i, task) {
+			return i
+		}
+	}
+	for i := range m.contentLines {
+		if lineContainsTaskCheckbox(m.contentLines, i, task) {
+			return i
+		}
+	}
+	return preferred
+}
+
+func lineContainsTaskCheckbox(lines []string, index int, task taskItem) bool {
+	if index < 0 || index >= len(lines) {
+		return false
+	}
+	_, _, ok := taskCheckboxColumns(lines[index])
+	return ok && (task.Text == "" || strings.Contains(lines[index], task.Text))
+}
+
 func (m *Model) focusNextLink(delta int) {
 	hadSelection := m.clearLineSelection()
+	m.selectedTask = -1
 
 	indexes := m.focusableLinkIndexes()
 	if len(indexes) == 0 {
@@ -1188,6 +1375,23 @@ func (m Model) styleFocusedLink(line string, link md.Link) string {
 	return line
 }
 
+func styleFocusedTaskCheckbox(line string) string {
+	plain := md.StripANSI(line)
+	start, end, ok := taskCheckboxColumns(plain)
+	if !ok {
+		return line
+	}
+	return styleANSIVisibleRange(line, start, end, taskFocusStyle)
+}
+
+func taskCheckboxColumns(line string) (int, int, bool) {
+	loc := renderedTaskCheckboxRE.FindStringIndex(line)
+	if loc == nil {
+		return 0, 0, false
+	}
+	return loc[0], loc[1], true
+}
+
 func (m *Model) openJumpConfirm(link md.Link) {
 	m.modalKind = modalConfirmJump
 	m.modalTitle = "Jump?"
@@ -1375,6 +1579,7 @@ func (m *Model) clearOutlineFocus() {
 
 func (m *Model) clearTransientHighlights() {
 	m.selectedLink = -1
+	m.selectedTask = -1
 	m.outlineVisible = false
 	m.clearLineSelection()
 	m.focusedJumpLine = -1
@@ -1415,10 +1620,14 @@ func (m *Model) copySelectedLink() {
 }
 
 func (m *Model) showCopiedMessage(status string) {
-	m.modalKind = modalMessage
-	m.modalTitle = "Copied"
-	m.modalBody = fmt.Sprintf("Copied to clipboard.\n\n%s", mutedStyle.Render("press any key or click outside to close"))
+	m.showMessage("Copied", fmt.Sprintf("Copied to clipboard.\n\n%s", mutedStyle.Render("press any key or click outside to close")))
 	m.status = status
+}
+
+func (m *Model) showMessage(title, body string) {
+	m.modalKind = modalMessage
+	m.modalTitle = title
+	m.modalBody = body
 }
 
 func (m Model) copyTargetLink() (md.Link, bool) {
@@ -1525,9 +1734,42 @@ func normalizedContains(line, key string) bool {
 }
 
 var (
-	markdownLinkRE = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
-	listMarkerRE   = regexp.MustCompile(`^([-*+]|\d+[.)])\s+`)
+	markdownLinkRE         = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	listMarkerRE           = regexp.MustCompile(`^([-*+]|\d+[.)])\s+`)
+	taskLineRE             = regexp.MustCompile(`^(\s*[-*+]\s+\[)([ xX])(\])`)
+	renderedTaskCheckboxRE = regexp.MustCompile(`\[[ xX]\]`)
 )
+
+func parseTaskItems(raw string) []taskItem {
+	lines := strings.Split(raw, "\n")
+	tasks := make([]taskItem, 0)
+	for i, line := range lines {
+		matches := taskLineRE.FindStringSubmatch(line)
+		if matches == nil {
+			continue
+		}
+		text := strings.TrimSpace(line[len(matches[0]):])
+		tasks = append(tasks, taskItem{
+			Line:    i + 1,
+			Checked: strings.EqualFold(matches[2], "x"),
+			Text:    strings.Trim(text, "`*_~"),
+		})
+	}
+	return tasks
+}
+
+func toggleTaskLine(line string) (string, bool) {
+	loc := taskLineRE.FindStringSubmatchIndex(line)
+	if loc == nil {
+		return line, false
+	}
+	stateStart, stateEnd := loc[4], loc[5]
+	next := "x"
+	if strings.EqualFold(line[stateStart:stateEnd], "x") {
+		next = " "
+	}
+	return line[:stateStart] + next + line[stateEnd:], true
+}
 
 func normalizeMarkdownLine(line string) string {
 	line = strings.TrimSpace(line)
@@ -1851,17 +2093,18 @@ func helpItems() []helpItem {
 		{Key: "arrows", Name: "scroll", Description: "move down, up, left, or right"},
 		{Key: "g / G", Name: "jump", Description: "go to top or bottom"},
 		{Key: "o", Name: "outline", Description: "toggle the heading pane"},
-		{Key: "enter", Name: "follow", Description: "jump to a focused internal link"},
+		{Key: "enter", Name: "toggle", Description: "toggle a focused checkbox"},
+		{Key: "space", Name: "toggle", Description: "toggle a focused checkbox"},
 		{Key: "/", Name: "search", Description: "search rendered text"},
 		{Key: "n / N", Name: "search", Description: "next or previous match"},
-		{Key: "tab", Name: "urls", Description: "enter URL focus and select the next URL"},
-		{Key: "shift+tab", Name: "urls", Description: "focus the previous URL"},
+		{Key: "tab", Name: "checkboxes", Description: "focus the next checkbox"},
+		{Key: "shift+tab", Name: "checkboxes", Description: "focus the previous checkbox"},
 		{Key: "y", Name: "copy", Description: "copy selected text, focused URL, or current-line URL"},
 		{Key: "mouse wheel", Name: "scroll", Description: "scroll the active text pane"},
 		{Key: "drag", Name: "select", Description: "select rendered text for copying"},
-		{Key: "click", Name: "links", Description: "copy an external URL or confirm an internal jump"},
+		{Key: "click", Name: "actions", Description: "toggle a checkbox, copy a URL, or confirm an internal jump"},
 		{Key: "?", Name: "help", Description: "open this searchable guide"},
-		{Key: "esc", Name: "close", Description: "close help/search or exit URL focus"},
+		{Key: "esc", Name: "close", Description: "close help/search or clear focus"},
 		{Key: "q", Name: "quit", Description: "exit mdpoke"},
 	}
 }
@@ -1901,6 +2144,11 @@ var (
 	linkFocusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("235")).
 			Background(lipgloss.Color("117")).
+			Bold(true)
+
+	taskFocusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("235")).
+			Background(lipgloss.Color("151")).
 			Bold(true)
 
 	jumpFocusStyle = lipgloss.NewStyle().
