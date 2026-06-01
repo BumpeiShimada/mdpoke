@@ -148,6 +148,17 @@ Task list:
 - [ ] Pending fixture case
 - [ ] Another task with [task link](#links)
 
+Inline code at the start of bullet items:
+
+- `aaa`
+    - `xxx`
+- `bbb`
+    - `yyy`
+- `111`
+    - `000`
+- `222`
+    - `000`
+
 ## Centering Targets
 
 Use this section to verify viewport centering when jumping.

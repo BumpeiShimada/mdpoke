@@ -113,6 +113,30 @@ func TestRenderKeepsNestedBulletsIndented(t *testing.T) {
 	}
 }
 
+func TestRenderBulletMarkersWhenItemStartsWithInlineCode(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"- `aaa`",
+		"    - `xxx`",
+		"- `111`",
+		"    - `000`",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	for _, want := range []string{"• aaa", "• xxx", "• 111", "• 000"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected bullet marker before inline code item %q:\n%s", want, plain)
+		}
+	}
+	for _, bad := range []string{"  aaa", "    xxx", "  111", "    000"} {
+		if strings.Contains(plain, bad) {
+			t.Fatalf("bullet marker disappeared before inline code item as %q:\n%s", bad, plain)
+		}
+	}
+}
+
 func TestRenderOrderedListKeepsSpaceAfterMarker(t *testing.T) {
 	rendered, err := Render(strings.Join([]string{
 		"1. First item",
