@@ -201,6 +201,43 @@ func TestRenderInlineCodeDoesNotAddPaddingSpaces(t *testing.T) {
 	}
 }
 
+func TestRenderPreservesSourceLineBreaksWithinParagraph(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"first source line",
+		"second source line without trailing spaces",
+		"third source line",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	lines := strings.Split(plain, "\n")
+	firstLine := -1
+	secondLine := -1
+	thirdLine := -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "first source line"):
+			firstLine = i
+		case strings.Contains(line, "second source line without trailing spaces"):
+			secondLine = i
+		case strings.Contains(line, "third source line"):
+			thirdLine = i
+		}
+	}
+
+	if firstLine < 0 || secondLine < 0 || thirdLine < 0 {
+		t.Fatalf("expected all source lines in rendered output:\n%s", plain)
+	}
+	if firstLine == secondLine || secondLine == thirdLine {
+		t.Fatalf("expected source line breaks to remain visible:\n%s", plain)
+	}
+	if strings.Contains(plain, "first source line second source line") {
+		t.Fatalf("source line break collapsed into a space:\n%s", plain)
+	}
+}
+
 func TestRenderCodeBlockBorderFitsLongestLine(t *testing.T) {
 	rendered, err := Render(strings.Join([]string{
 		"```go",

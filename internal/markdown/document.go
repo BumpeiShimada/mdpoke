@@ -93,6 +93,7 @@ func Render(markdown string, width int) (string, error) {
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes([]byte(mdpokeStyleJSON())),
 		glamour.WithChromaFormatter("terminal16m"),
+		glamour.WithPreservedNewLines(),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
