@@ -35,7 +35,7 @@ mdpoke README.md
 When developing locally without installing:
 
 ```sh
-go run ./cmd/mdpoke -- README.md
+go run ./cmd/mdpoke -- testdata/fixtures/comprehensive.md
 ```
 
 ## Homebrew
