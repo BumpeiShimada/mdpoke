@@ -22,21 +22,21 @@ func prepareCustomBlocks(markdown string, width int) (string, []customBlock) {
 	blocks := make([]customBlock, 0)
 
 	for i := 0; i < len(lines); i++ {
-		if marker, language, ok := codeFenceStart(lines[i]); ok {
+		if marker, language, indent, ok := codeFenceStart(lines[i]); ok {
 			codeLines := make([]string, 0)
 			i++
 			for i < len(lines) {
 				if codeFenceEnd(lines[i], marker) {
 					break
 				}
-				codeLines = append(codeLines, lines[i])
+				codeLines = append(codeLines, strings.TrimPrefix(lines[i], indent))
 				i++
 			}
 			placeholder := customBlockPlaceholder(len(blocks))
 			prepared = append(prepared, "", placeholder, "")
 			blocks = append(blocks, customBlock{
 				placeholder: placeholder,
-				rendered:    renderCodeBlock(codeLines, language, width),
+				rendered:    renderCodeBlock(codeLines, language, width, indent),
 			})
 			continue
 		}
@@ -93,7 +93,8 @@ func customBlockPlaceholder(index int) string {
 	return fmt.Sprintf("@@MDPOKE_CUSTOM_BLOCK_%04d@@", index)
 }
 
-func codeFenceStart(line string) (string, string, bool) {
+func codeFenceStart(line string) (string, string, string, bool) {
+	indent := leadingWhitespace(line)
 	trimmed := strings.TrimSpace(line)
 	for _, markerRune := range []byte{'`', '~'} {
 		marker := strings.Repeat(string(markerRune), 3)
@@ -111,17 +112,18 @@ func codeFenceStart(line string) (string, string, bool) {
 		if info != "" {
 			language = strings.Fields(info)[0]
 		}
-		return fence, language, true
+		return fence, language, indent, true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 func codeFenceEnd(line, marker string) bool {
 	return strings.HasPrefix(strings.TrimSpace(line), marker)
 }
 
-func renderCodeBlock(codeLines []string, language string, width int) string {
-	innerMax := max(10, width-lipgloss.Width(customBlockIndent)-2)
+func renderCodeBlock(codeLines []string, language string, width int, indent string) string {
+	blockIndent := indent + customBlockIndent
+	innerMax := max(10, width-lipgloss.Width(blockIndent)-2)
 	contentMax := max(8, innerMax-2)
 	wrapped := make([]string, 0, len(codeLines))
 	for _, line := range codeLines {
@@ -148,12 +150,21 @@ func renderCodeBlock(codeLines []string, language string, width int) string {
 	}
 
 	out := make([]string, 0, len(highlightedLines)+2)
-	out = append(out, customBlockIndent+topRule(title, innerWidth))
+	out = append(out, blockIndent+topRule(title, innerWidth))
 	for _, line := range highlightedLines {
-		out = append(out, customBlockIndent+line)
+		out = append(out, blockIndent+line)
 	}
-	out = append(out, customBlockIndent+bottomRule(innerWidth))
+	out = append(out, blockIndent+bottomRule(innerWidth))
 	return strings.Join(out, "\n")
+}
+
+func leadingWhitespace(s string) string {
+	for i, r := range s {
+		if r != ' ' && r != '\t' {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func highlightCode(source, language string) string {

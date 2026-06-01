@@ -259,6 +259,14 @@ for target in docs/plan.md testdata/fixtures/comprehensive.md; do
 done
 ```
 
+### Indented Code Block In A List
+
+1. mac で git を使えるようにする
+
+    ```sh
+    xcode-select --install
+    ```
+
 ### JSON
 
 ```json
