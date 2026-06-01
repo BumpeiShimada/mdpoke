@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,27 +123,125 @@ func TestFixtureFirstExternalLinkFocusIsVisible(t *testing.T) {
 	}
 }
 
-func TestGuideLabelsTabAsURLFocus(t *testing.T) {
+func TestGuideLabelsTabAsCheckboxFocus(t *testing.T) {
 	model := New(md.Document{
-		Rendered: "External\n",
-		Raw:      "[External](https://example.com)\n",
-		Links: []md.Link{
-			{Text: "External", URL: "https://example.com", Line: 1},
-		},
+		Rendered: "[ ] Pending\n",
+		Raw:      "- [ ] Pending\n",
 	})
 
 	items := strings.Join(model.guideItems(), " ")
-	if !strings.Contains(items, "tab url focus") {
-		t.Fatalf("guide items = %q, want tab url focus", items)
+	if !strings.Contains(items, "tab checkbox") {
+		t.Fatalf("guide items = %q, want tab checkbox", items)
 	}
 
-	model.selectedLink = 0
+	model.selectedTask = 0
 	items = strings.Join(model.guideItems(), " ")
-	if !strings.Contains(items, "tab next url") {
-		t.Fatalf("focused guide items = %q, want tab next url", items)
+	if !strings.Contains(items, "tab next box") {
+		t.Fatalf("focused guide items = %q, want tab next box", items)
 	}
-	if !strings.Contains(items, "esc exit url") {
-		t.Fatalf("focused guide items = %q, want esc exit url", items)
+	if !strings.Contains(items, "space toggle") {
+		t.Fatalf("focused guide items = %q, want space toggle", items)
+	}
+}
+
+func TestTabWithoutCheckboxesShowsMessage(t *testing.T) {
+	model := New(md.Document{
+		Rendered: "No tasks here\n",
+		Raw:      "No tasks here\n",
+	})
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+	got := next.(Model)
+
+	if got.modalKind != modalMessage {
+		t.Fatalf("modalKind = %d, want message", got.modalKind)
+	}
+	if !strings.Contains(got.modalTitle, "No Checkboxes") {
+		t.Fatalf("modalTitle = %q, want No Checkboxes", got.modalTitle)
+	}
+}
+
+func TestTabAndSpaceToggleCheckboxAndUpdateFile(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n- [x] Done\n")
+	oldTaskFocusStyle := taskFocusStyle
+	taskFocusStyle = lipgloss.NewStyle().Transform(func(s string) string { return "{" + s + "}" })
+	defer func() {
+		taskFocusStyle = oldTaskFocusStyle
+	}()
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+	got := next.(Model)
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want first checkbox", got.selectedTask)
+	}
+	if !strings.Contains(got.renderContent(), "{[ ]}") {
+		t.Fatalf("expected focused checkbox to be highlighted:\n%s", got.renderContent())
+	}
+
+	next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeySpace}))
+	got = next.(Model)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Pending") {
+		t.Fatalf("file was not toggled:\n%s", string(data))
+	}
+	if got.tasks[0].Checked != true {
+		t.Fatalf("first task Checked = false, want true")
+	}
+}
+
+func TestEnterTogglesFocusedCheckbox(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n")
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+	next, _ = next.(Model).Update(tea.KeyMsg(tea.Key{Type: tea.KeyEnter}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Pending") {
+		t.Fatalf("file was not toggled by enter:\n%s", string(data))
+	}
+	if got.tasks[0].Checked != true {
+		t.Fatalf("first task Checked = false, want true")
+	}
+}
+
+func TestClickCheckboxTogglesIt(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n")
+	model.body.Width = 60
+	model.body.Height = 10
+	line := lineContaining(model.contentLines, "[ ]")
+	if line < 0 {
+		t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+	}
+	x := strings.Index(model.contentLines[line], "[ ]")
+	if x < 0 {
+		t.Fatalf("checkbox not rendered: %q", model.contentLines[line])
+	}
+	model.body.SetYOffset(line)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Pending") {
+		t.Fatalf("file was not toggled by click:\n%s", string(data))
+	}
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want clicked checkbox", got.selectedTask)
 	}
 }
 
@@ -184,7 +283,7 @@ func TestEscExitsURLFocus(t *testing.T) {
 		t.Fatalf("jump focus not cleared: line=%d text=%q", got.focusedJumpLine, got.focusedJumpText)
 	}
 	items := strings.Join(got.guideItems(), " ")
-	if !strings.Contains(items, "tab url focus") || strings.Contains(items, "n next") || strings.Contains(items, "esc exit url") {
+	if !strings.Contains(items, "o outline") || strings.Contains(items, "n next") || strings.Contains(items, "esc exit") {
 		t.Fatalf("guide items = %q, want initial actions", items)
 	}
 }
@@ -1417,6 +1516,39 @@ func fixtureModel(t *testing.T) (Model, []md.Heading) {
 		Links:    links,
 	})
 	return model, outline
+}
+
+func taskFixtureModel(t *testing.T, source string) (Model, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tasks.md")
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := md.Render(source, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(source))
+	model := New(md.Document{
+		Path:     path,
+		Raw:      source,
+		Rendered: rendered,
+		Outline:  outline,
+		Links:    links,
+	})
+	model.body.Width = 100
+	model.body.Height = 10
+	model.rebuildContent()
+	return model, path
+}
+
+func lineContaining(lines []string, needle string) int {
+	for i, line := range lines {
+		if strings.Contains(line, needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 func headingLine(outline []md.Heading, text string) int {
