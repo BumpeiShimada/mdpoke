@@ -450,4 +450,4 @@ This is a deliberately long paragraph designed to wrap across multiple terminal 
 
 If an internal anchor worked, pressing `enter` on the Jump Target link should land near this heading.
 
-fixture target final line.
+fixture target final line. External reload check: append a `Reload marker` line from another process and the viewer should refresh soon after the write.
