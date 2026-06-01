@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -24,6 +25,7 @@ const (
 	footerHeight    = 1
 	outlineWidth    = 42
 	bottomScrollPad = 20
+	reloadInterval  = 500 * time.Millisecond
 )
 
 type mode int
@@ -65,6 +67,13 @@ type helpItem struct {
 	Description string
 }
 
+type fileStamp struct {
+	ModTime time.Time
+	Size    int64
+}
+
+type fileWatchMsg struct{}
+
 type Model struct {
 	doc md.Document
 
@@ -94,6 +103,7 @@ type Model struct {
 	ready  bool
 	err    error
 	status string
+	stamp  fileStamp
 
 	renderedLines []string
 	contentLines  []string
@@ -151,18 +161,23 @@ func New(doc md.Document) Model {
 		textSelectionEnd:    invalidSelectionPoint(),
 		textSelectionAnchor: invalidSelectionPoint(),
 	}
+	m.stamp = currentFileStamp(doc.Path)
 	m.rebuildContent()
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	return watchFileCmd()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case fileWatchMsg:
+		m.reloadIfFileChanged()
+		return m, watchFileCmd()
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -428,6 +443,75 @@ func (m *Model) resize() {
 	m.outline.Width = min(outlineWidth, max(20, m.width/2))
 	m.outline.Height = contentHeight
 	m.rebuildContent()
+}
+
+func watchFileCmd() tea.Cmd {
+	return tea.Tick(reloadInterval, func(time.Time) tea.Msg {
+		return fileWatchMsg{}
+	})
+}
+
+func currentFileStamp(path string) fileStamp {
+	if strings.TrimSpace(path) == "" {
+		return fileStamp{}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{ModTime: info.ModTime(), Size: info.Size()}
+}
+
+func (s fileStamp) changed(next fileStamp) bool {
+	if s.ModTime.IsZero() && next.ModTime.IsZero() {
+		return false
+	}
+	return !s.ModTime.Equal(next.ModTime) || s.Size != next.Size
+}
+
+func (m *Model) reloadIfFileChanged() {
+	if strings.TrimSpace(m.doc.Path) == "" {
+		return
+	}
+	nextStamp := currentFileStamp(m.doc.Path)
+	if !m.stamp.changed(nextStamp) {
+		return
+	}
+	m.stamp = nextStamp
+	if nextStamp.ModTime.IsZero() {
+		m.status = "file unavailable"
+		return
+	}
+	m.reloadDocumentFromDisk("reloaded")
+}
+
+func (m *Model) reloadDocumentFromDisk(status string) {
+	width := m.renderWidth()
+	doc, err := md.Load(m.doc.Path, width)
+	if err != nil {
+		m.err = err
+		m.status = fmt.Sprintf("reload failed: %v", err)
+		return
+	}
+	m.doc = doc
+	m.err = nil
+	m.stamp = currentFileStamp(m.doc.Path)
+	m.selectedLink = -1
+	m.selectedTask = -1
+	m.focusedJumpLine = -1
+	m.focusedJumpText = ""
+	m.focusedOutline = -1
+	m.rebuildContent()
+	m.body.SetYOffset(clamp(m.body.YOffset, 0, max(0, len(m.renderedLines)-1)))
+	m.status = status
+}
+
+func (m Model) renderWidth() int {
+	width := m.body.Width
+	if width <= 0 {
+		width = DefaultRenderWidth
+	}
+	return max(20, width-2)
 }
 
 func (m *Model) rebuildContent() {
@@ -1024,7 +1108,7 @@ func (m *Model) toggleTask(index int) {
 		Outline: outline,
 		Links:   links,
 	}
-	renderedDoc, err := nextDoc.Render(max(20, m.body.Width-2))
+	renderedDoc, err := nextDoc.Render(m.renderWidth())
 	if err != nil {
 		m.showMessage("Render Failed", fmt.Sprintf("%v\n\n%s", err, mutedStyle.Render("press any key to close")))
 		m.status = fmt.Sprintf("render failed: %v", err)
@@ -1032,6 +1116,7 @@ func (m *Model) toggleTask(index int) {
 	}
 
 	m.doc = renderedDoc
+	m.stamp = currentFileStamp(m.doc.Path)
 	m.rebuildContent()
 	for i, nextTask := range m.tasks {
 		if nextTask.Line == task.Line {

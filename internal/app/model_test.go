@@ -245,6 +245,44 @@ func TestClickCheckboxTogglesIt(t *testing.T) {
 	}
 }
 
+func TestFileWatchReloadsExternalChanges(t *testing.T) {
+	model, path := taskFixtureModel(t, "# First\n")
+	model.body.Width = 80
+	model.body.Height = 10
+	model.stamp = currentFileStamp(path)
+
+	nextSource := "# First\n\nExternal update marker\n"
+	if err := os.WriteFile(path, []byte(nextSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	next, _ := model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	if !strings.Contains(got.doc.Raw, "External update marker") {
+		t.Fatalf("doc was not reloaded:\n%s", got.doc.Raw)
+	}
+	if !strings.Contains(md.StripANSI(got.renderContent()), "External update marker") {
+		t.Fatalf("rendered content was not refreshed:\n%s", md.StripANSI(got.renderContent()))
+	}
+	if got.status != "reloaded" {
+		t.Fatalf("status = %q, want reloaded", got.status)
+	}
+}
+
+func TestCheckboxToggleRefreshesFileStamp(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n")
+	model.stamp = currentFileStamp(path)
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+	next, _ = next.(Model).Update(tea.KeyMsg(tea.Key{Type: tea.KeySpace}))
+	got := next.(Model)
+
+	if got.stamp != currentFileStamp(path) {
+		t.Fatalf("stamp = %#v, want current %#v", got.stamp, currentFileStamp(path))
+	}
+}
+
 func TestEscExitsURLFocus(t *testing.T) {
 	model := New(md.Document{
 		Rendered: "External alpha\nJump Target\n",
