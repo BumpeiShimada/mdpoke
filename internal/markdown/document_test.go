@@ -209,6 +209,41 @@ func TestRenderCodeBlockBorderFitsLongestLine(t *testing.T) {
 	}
 }
 
+func TestRenderIndentedCodeBlockKeepsFenceIndentOutsideContent(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"1. mac で git を使えるようにする",
+		"",
+		"    ```sh",
+		"    xcode-select --install",
+		"    ```",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(StripANSI(rendered), "\n")
+	var borderLine, codeLine string
+	for _, line := range lines {
+		if strings.Contains(line, "╭─ sh") {
+			borderLine = line
+		}
+		if strings.Contains(line, "xcode-select --install") {
+			codeLine = line
+		}
+	}
+
+	if borderLine == "" || codeLine == "" {
+		t.Fatalf("expected indented code block to render:\n%s", StripANSI(rendered))
+	}
+	wantIndent := len("    ") + len(customBlockIndent)
+	if leadingSpaces(borderLine) != wantIndent || leadingSpaces(codeLine) != wantIndent {
+		t.Fatalf("expected border and code to keep fence indent outside content, got border=%d code=%d want=%d:\n%s", leadingSpaces(borderLine), leadingSpaces(codeLine), wantIndent, StripANSI(rendered))
+	}
+	if strings.HasPrefix(strings.TrimPrefix(codeLine, strings.Repeat(" ", wantIndent)), "    ") {
+		t.Fatalf("expected code content to strip the fence indent:\n%s", StripANSI(rendered))
+	}
+}
+
 func TestRenderCodeBlockWrapsLongLines(t *testing.T) {
 	rendered, err := Render(strings.Join([]string{
 		"```text",
