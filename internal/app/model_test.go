@@ -411,6 +411,108 @@ func TestFileWatchReloadsExternalChanges(t *testing.T) {
 	}
 }
 
+func TestNoWatchInitDoesNotScheduleReload(t *testing.T) {
+	model := NewWithOptions(md.Document{Rendered: "body\n", Raw: "body\n"}, Options{NoWatch: true})
+
+	if cmd := model.Init(); cmd != nil {
+		t.Fatal("Init returned a watch command with NoWatch enabled")
+	}
+}
+
+func TestNoWatchIgnoresFileWatchMessages(t *testing.T) {
+	model, path := taskFixtureModel(t, "# First\n")
+	model = NewWithOptions(model.doc, Options{NoWatch: true})
+	model.stamp = fileStamp{}
+
+	if err := os.WriteFile(path, []byte("# First\n\nExternal update marker\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	next, cmd := model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	if cmd != nil {
+		t.Fatal("fileWatchMsg returned a watch command with NoWatch enabled")
+	}
+	if strings.Contains(got.doc.Raw, "External update marker") {
+		t.Fatalf("doc reloaded despite NoWatch:\n%s", got.doc.Raw)
+	}
+}
+
+func TestFileWatchRejectsSymlinkReplacementByDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Original\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := md.LoadWithOptions(path, md.LoadOptions{Width: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewWithOptions(doc, Options{})
+	model.body.Width = 80
+	model.body.Height = 10
+	model.stamp = currentFileStamp(path)
+
+	target := filepath.Join(dir, "replacement.md")
+	if err := os.WriteFile(target, []byte("# Replacement\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	next, _ := model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	if got.err == nil {
+		t.Fatal("expected reload error after symlink replacement")
+	}
+	if !strings.Contains(got.status, "symlink") {
+		t.Fatalf("status = %q, want symlink rejection", got.status)
+	}
+	if strings.Contains(got.doc.Raw, "Replacement") {
+		t.Fatalf("doc reloaded symlink target despite default rejection:\n%s", got.doc.Raw)
+	}
+}
+
+func TestFileWatchReloadHonorsMaxSizeOption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Small\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	loadOptions := md.LoadOptions{Width: 80, MaxSize: 64}
+	doc, err := md.LoadWithOptions(path, loadOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewWithOptions(doc, Options{LoadOptions: loadOptions})
+	model.body.Width = 80
+	model.body.Height = 10
+	model.stamp = fileStamp{}
+
+	if err := os.WriteFile(path, []byte("# Large\n"+strings.Repeat("x", 128)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	next, _ := model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	if got.err == nil {
+		t.Fatal("expected reload error for oversized file")
+	}
+	if !strings.Contains(got.status, "too large") {
+		t.Fatalf("status = %q, want too large", got.status)
+	}
+	if strings.Contains(got.doc.Raw, "Large") {
+		t.Fatalf("doc reloaded oversized content:\n%s", got.doc.Raw)
+	}
+}
+
 func TestCheckboxToggleRefreshesFileStamp(t *testing.T) {
 	model, path := taskFixtureModel(t, "- [ ] Pending\n")
 	model.stamp = currentFileStamp(path)

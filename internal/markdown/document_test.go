@@ -1,11 +1,132 @@
 package markdown
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+func TestSanitizeMarkdownInputDropsTerminalControls(t *testing.T) {
+	input := "ok\n\t日本語" +
+		"\x1b[2J" +
+		"\a" +
+		string([]byte{0x00, 0x1f, 0x7f, 0x80, 0x9f}) +
+		string(rune(0x85)) +
+		"done"
+
+	got := SanitizeMarkdownInput(input)
+
+	if got != "ok\n\t日本語[2Jdone" {
+		t.Fatalf("SanitizeMarkdownInput() = %q", got)
+	}
+	for _, bad := range []rune{'\x1b', '\a', '\x00', '\x1f', '\x7f', rune(0x85)} {
+		if strings.ContainsRune(got, bad) {
+			t.Fatalf("sanitized output still contains control %U in %q", bad, got)
+		}
+	}
+}
+
+func TestSanitizeMarkdownInputPreservesNormalMarkdown(t *testing.T) {
+	source := strings.Join([]string{
+		"# Title",
+		"",
+		"- [ ] task",
+		"Tabbed\ttext",
+		"[site](https://example.com/日本語)",
+		"",
+		"```go",
+		"func main() {}",
+		"```",
+	}, "\n")
+
+	if got := SanitizeMarkdownInput(source); got != source {
+		t.Fatalf("normal markdown changed:\n got: %q\nwant: %q", got, source)
+	}
+}
+
+func TestRenderSanitizesMarkdownBeforeRendering(t *testing.T) {
+	rendered, err := Render("# Ti\x1btle\a\n\nbody\x1b]8;;https://example.com\a\n", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	if strings.ContainsAny(plain, "\x1b\a") {
+		t.Fatalf("rendered plain output contains source terminal controls: %q", plain)
+	}
+	if !strings.Contains(plain, "Title") || !strings.Contains(plain, "body") {
+		t.Fatalf("expected normal text to survive sanitization:\n%s", plain)
+	}
+}
+
+func TestLoadRejectsOversizedFile(t *testing.T) {
+	path := writeMarkdownFixture(t, strings.Repeat("a", 33))
+
+	_, err := LoadWithOptions(path, LoadOptions{Width: 80, MaxSize: 32})
+
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want ErrInvalidInput", err)
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("error = %q, want too large", err)
+	}
+}
+
+func TestLoadRejectsSymlinkByDefault(t *testing.T) {
+	target := writeMarkdownFixture(t, "# Target\n")
+	link := target + ".link"
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	_, err := LoadWithOptions(link, LoadOptions{Width: 80})
+
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want ErrInvalidInput", err)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %q, want symlink", err)
+	}
+}
+
+func TestLoadAllowsSymlinkWhenExplicit(t *testing.T) {
+	target := writeMarkdownFixture(t, "# Target\n")
+	link := target + ".link"
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	doc, err := LoadWithOptions(link, LoadOptions{Width: 80, FollowSymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if doc.Raw != "# Target\n" {
+		t.Fatalf("doc.Raw = %q", doc.Raw)
+	}
+}
+
+func TestLoadSanitizesRawOutlineAndLinks(t *testing.T) {
+	path := writeMarkdownFixture(t, "# Ti\x1btle\n\n[li\x07nk](https://example.com/\x1bpath)\n")
+
+	doc, err := LoadWithOptions(path, LoadOptions{Width: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.ContainsAny(doc.Raw, "\x1b\a") {
+		t.Fatalf("doc.Raw contains terminal controls: %q", doc.Raw)
+	}
+	if len(doc.Outline) != 1 || doc.Outline[0].Text != "Title" {
+		t.Fatalf("outline = %#v, want sanitized Title", doc.Outline)
+	}
+	if len(doc.Links) != 1 || doc.Links[0].Text != "link" || doc.Links[0].URL != "https://example.com/path" {
+		t.Fatalf("links = %#v, want sanitized link", doc.Links)
+	}
+}
 
 func TestParseStructureExtractsOutlineTree(t *testing.T) {
 	source := []byte(strings.Join([]string{
@@ -434,4 +555,13 @@ func leadingSpaces(s string) int {
 
 func displayWidth(s string) int {
 	return lipgloss.Width(s)
+}
+
+func writeMarkdownFixture(t *testing.T, source string) string {
+	t.Helper()
+	path := t.TempDir() + "/fixture.md"
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

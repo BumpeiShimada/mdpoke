@@ -15,6 +15,7 @@ It is meant for the kind of Markdown that engineers actually live in: design not
 - Follow internal Markdown anchors with a confirmation prompt, and copy external links instead of accidentally opening a browser.
 - Drag across rendered text and press `y` to copy a clean plain-text selection.
 - Leave it open while editing the file elsewhere; `mdpoke` watches the file and reloads when it changes.
+- Treat local Markdown defensively: terminal control characters are stripped, files are size-limited by default, and symlinks require an explicit opt-in.
 
 ## Install
 
@@ -43,6 +44,16 @@ go install ./cmd/mdpoke
 ```sh
 mdpoke README.md
 ```
+
+Useful safety and reload options:
+
+```sh
+mdpoke --no-watch README.md
+mdpoke --max-size 10485760 README.md
+mdpoke --follow-symlinks README.md
+```
+
+By default, `mdpoke` refuses symlinked Markdown files, limits reads to 20 MiB, strips terminal control characters from Markdown before rendering or parsing links/headings, and watches the opened file for changes. Use `--follow-symlinks` only when the link target is trusted, `--max-size` to tighten or raise the read limit, and `--no-watch` when automatic reloads are not desired.
 
 When developing locally without installing:
 
