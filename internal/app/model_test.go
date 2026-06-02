@@ -107,6 +107,30 @@ func TestRenderContentFallsBackToFocusedLinkText(t *testing.T) {
 	}
 }
 
+func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
+	url := "https://example.com/path/to/日本語リソース名"
+	model := New(md.Document{
+		Rendered: "こちらがURL: \x1b[4mhttps://example.com/path/to/\x1b[0m日本語リソース名\n",
+		Raw:      "こちらがURL: " + url + "\n",
+		Links: []md.Link{
+			{Text: url, URL: url, Line: 1},
+		},
+	})
+	oldBareAutoLinkStyle := bareAutoLinkStyle
+	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
+	defer func() {
+		bareAutoLinkStyle = oldBareAutoLinkStyle
+	}()
+
+	rendered := model.renderContent()
+	if !strings.Contains(rendered, "["+url+"]") {
+		t.Fatalf("expected full copied URL to be highlighted, got %q", rendered)
+	}
+	if strings.Contains(rendered, "[https://example.com/path/to/]日本語リソース名") {
+		t.Fatalf("highlight stopped before non-ASCII URL suffix: %q", rendered)
+	}
+}
+
 func TestFixtureFirstExternalLinkFocusIsVisible(t *testing.T) {
 	model, _ := fixtureModel(t)
 	index := linkIndexByURL(t, model.doc.Links, "https://example.com")
@@ -120,6 +144,37 @@ func TestFixtureFirstExternalLinkFocusIsVisible(t *testing.T) {
 	rendered := model.renderContent()
 	if !strings.Contains(rendered, "[External Example]") && !strings.Contains(rendered, "[https://example.com]") {
 		t.Fatalf("expected first external link focus to be visible:\n%s", rendered)
+	}
+}
+
+func TestModalOverlayKeepsBorderColumnsAlignedWithStyledContent(t *testing.T) {
+	model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+	model.width = 80
+	model.height = 12
+	model.ready = true
+	model.modalKind = modalMessage
+	model.modalTitle = "Copy Failed"
+	model.modalBody = "exit status 1\n\n" + mutedStyle.Render("press any key to close")
+
+	rendered := model.modalOverlay(strings.Repeat(strings.Repeat(" ", model.width)+"\n", model.height))
+	lines := strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
+	left, _, boxWidth, _, ok := model.modalBoxBounds()
+	if !ok {
+		t.Fatal("expected modal bounds")
+	}
+	wantRight := left + boxWidth - 1
+
+	for _, line := range lines {
+		plain := md.StripANSI(line)
+		if !strings.ContainsAny(plain, "╭│╰") {
+			continue
+		}
+		right := max(strings.LastIndex(plain, "╮"), strings.LastIndex(plain, "│"))
+		right = max(right, strings.LastIndex(plain, "╯"))
+		rightColumn := lipgloss.Width(plain[:right])
+		if rightColumn != wantRight {
+			t.Fatalf("right border column = %d, want %d in %q", rightColumn, wantRight, plain)
+		}
 	}
 }
 

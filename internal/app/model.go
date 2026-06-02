@@ -538,6 +538,8 @@ func (m Model) renderContent() string {
 	lines := make([]string, len(m.renderedLines))
 	copy(lines, m.renderedLines)
 
+	m.styleBareAutoLinks(lines)
+
 	matchesByLine := make(map[int][]int)
 	for i, match := range m.searchMatches {
 		matchesByLine[match.Line] = append(matchesByLine[match.Line], i)
@@ -793,8 +795,7 @@ func (m Model) modalOverlay(base string) string {
 	boxWidth := min(66, max(34, m.width-10))
 	contentWidth := max(12, boxWidth-4)
 	title := titleStyle.Render(m.modalTitle)
-	titleWidth := lipgloss.Width(title)
-	topRuleWidth := max(0, boxWidth-2-titleWidth)
+	topRuleWidth := max(0, boxWidth-2-lipgloss.Width(md.StripANSI(title)))
 	topBorder := "╭" + title + strings.Repeat("─", topRuleWidth) + "╮"
 	bottom := "╰" + strings.Repeat("─", max(0, boxWidth-2)) + "╯"
 
@@ -805,7 +806,7 @@ func (m Model) modalOverlay(base string) string {
 		if m.modalKind == modalConfirmJump && i == len(bodyLines)-1 {
 			line = confirmButtonStyle.Render("y confirm") + "   " + cancelButtonStyle.Render("n cancel")
 		}
-		padded := lipgloss.NewStyle().Width(contentWidth).Render(line)
+		padded := padANSIToWidth(line, contentWidth)
 		lines = append(lines, "│ "+padded+" │")
 	}
 	lines = append(lines, bottom)
@@ -816,6 +817,11 @@ func (m Model) modalOverlay(base string) string {
 		return base
 	}
 	return overlayBoxAt(base, box, left, top)
+}
+
+func padANSIToWidth(line string, width int) string {
+	padding := max(0, width-lipgloss.Width(md.StripANSI(line)))
+	return line + strings.Repeat(" ", padding)
 }
 
 func overlayBoxAt(base, box string, left, top int) string {
@@ -1460,6 +1466,39 @@ func (m Model) styleFocusedLink(line string, link md.Link) string {
 	target, start := focusedLinkTarget(plain, link)
 	if start >= 0 {
 		return styleANSIVisibleRange(line, start, start+lipgloss.Width(target), linkFocusStyle)
+	}
+	return line
+}
+
+func (m Model) styleBareAutoLinks(lines []string) {
+	for _, link := range m.doc.Links {
+		if link.Text != link.URL || !hasScheme(link.URL) {
+			continue
+		}
+		line := m.lineForLink(link)
+		if line < 0 || line >= len(lines) {
+			continue
+		}
+		lines[line] = styleBareAutoLink(lines[line], strings.TrimSpace(link.URL))
+	}
+}
+
+func styleBareAutoLink(line, target string) string {
+	if target == "" {
+		return line
+	}
+	plain := md.StripANSI(line)
+	offset := 0
+	for offset <= len(plain) {
+		found := strings.Index(plain[offset:], target)
+		if found < 0 {
+			break
+		}
+		startByte := offset + found
+		start := lipgloss.Width(plain[:startByte])
+		end := start + lipgloss.Width(target)
+		line = styleANSIVisibleRangePlain(line, start, end, bareAutoLinkStyle)
+		offset = startByte + max(1, len(target))
 	}
 	return line
 }
@@ -2268,6 +2307,10 @@ var (
 			Foreground(lipgloss.Color("235")).
 			Background(lipgloss.Color("117")).
 			Bold(true)
+
+	bareAutoLinkStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("69")).
+				Underline(true)
 
 	taskFocusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("235")).
