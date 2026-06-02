@@ -1097,6 +1097,43 @@ func TestClickBetweenTwoLinksDoesNotChooseEither(t *testing.T) {
 	}
 }
 
+func TestClickLinkFallsBackToVisibleRenderedLine(t *testing.T) {
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: "External", URL: "https://example.com", Line: 10},
+		},
+		Rendered: "External\n",
+		Raw:      strings.Repeat("plain\n", 9) + "[External](https://example.com)\n",
+	})
+
+	link, ok := model.linkAtRenderedPosition(0, 1, 1)
+	if !ok {
+		t.Fatal("expected visible link to be found despite mismatched raw line")
+	}
+	if link.URL != "https://example.com" {
+		t.Fatalf("URL = %q, want https://example.com", link.URL)
+	}
+}
+
+func TestClickChoosesLongestOverlappingVisibleLink(t *testing.T) {
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: "Short", URL: "https://example.com", Line: 1},
+			{Text: "Long", URL: "https://example.com/autolink-fixture", Line: 2},
+		},
+		Rendered: "https://example.com/autolink-fixture\n",
+		Raw:      "[Short](https://example.com)\nhttps://example.com/autolink-fixture\n",
+	})
+
+	link, ok := model.linkAtRenderedPosition(0, 1, 1)
+	if !ok {
+		t.Fatal("expected overlapping visible link to be found")
+	}
+	if link.URL != "https://example.com/autolink-fixture" {
+		t.Fatalf("URL = %q, want autolink fixture URL", link.URL)
+	}
+}
+
 func TestClickFixtureAutolinkCopiesURL(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
@@ -1757,5 +1794,35 @@ func TestUpdateOutlineMouseSelectsClickedHeading(t *testing.T) {
 	}
 	if !strings.Contains(got.status, "Child") {
 		t.Fatalf("status = %q, want Child", got.status)
+	}
+}
+
+func BenchmarkLinkAtRenderedPositionLargeDocument(b *testing.B) {
+	const linkCount = 1000
+	rawLines := make([]string, 0, linkCount)
+	renderedLines := make([]string, 0, linkCount)
+	links := make([]md.Link, 0, linkCount)
+	for i := 0; i < linkCount; i++ {
+		text := fmt.Sprintf("Link %03d", i)
+		url := fmt.Sprintf("https://example.com/%03d", i)
+		rawLines = append(rawLines, fmt.Sprintf("[%s](%s)", text, url))
+		renderedLines = append(renderedLines, text)
+		links = append(links, md.Link{Text: text, URL: url, Line: i + 1})
+	}
+
+	model := New(md.Document{
+		Links:    links,
+		Rendered: strings.Join(renderedLines, "\n") + "\n",
+		Raw:      strings.Join(rawLines, "\n") + "\n",
+	})
+	line := linkCount - 1
+	x := strings.Index(model.renderedLines[line], "Link")
+	rawLine := model.rawLineForRendered(line)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, ok := model.linkAtRenderedPosition(line, x, rawLine); !ok {
+			b.Fatal("missing link")
+		}
 	}
 }

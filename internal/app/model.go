@@ -1527,31 +1527,40 @@ func (m Model) lineForLink(link md.Link) int {
 }
 
 func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bool) {
-	candidates := make([]md.Link, 0)
-	for _, link := range m.doc.Links {
-		if link.Line == rawLine || m.lineForLink(link) == renderedLine {
-			candidates = append(candidates, link)
-		}
-	}
-	if len(candidates) == 0 {
-		return md.Link{}, false
-	}
 	if renderedLine < 0 || renderedLine >= len(m.renderedLines) {
 		return md.Link{}, false
 	}
 
 	plain := md.StripANSI(m.renderedLines[renderedLine])
-	for _, link := range candidates {
-		target, start := focusedLinkTarget(plain, link)
-		if start < 0 {
-			continue
-		}
-		end := start + lipgloss.Width(target)
-		if x >= start && x < end {
-			return link, true
+	candidates := make([]md.Link, 0)
+	for _, link := range m.doc.Links {
+		if link.Line == rawLine {
+			candidates = append(candidates, link)
 		}
 	}
-	return md.Link{}, false
+	for _, link := range m.doc.Links {
+		if link.Line == rawLine {
+			continue
+		}
+		if _, _, _, ok := clickedLinkTarget(plain, link, x); ok {
+			candidates = append(candidates, link)
+		}
+	}
+
+	var selected md.Link
+	selectedWidth := -1
+	for _, link := range candidates {
+		_, start, end, ok := clickedLinkTarget(plain, link, x)
+		if !ok {
+			continue
+		}
+		width := end - start
+		if width > selectedWidth {
+			selected = link
+			selectedWidth = width
+		}
+	}
+	return selected, selectedWidth >= 0
 }
 
 func lineContainsFocusedLinkTarget(lines []string, index int, link md.Link) bool {
@@ -1560,6 +1569,28 @@ func lineContainsFocusedLinkTarget(lines []string, index int, link md.Link) bool
 	}
 	_, start := focusedLinkTarget(md.StripANSI(lines[index]), link)
 	return start >= 0
+}
+
+func clickedLinkTarget(plain string, link md.Link, x int) (string, int, int, bool) {
+	for _, target := range []string{strings.TrimSpace(link.URL), strings.TrimSpace(link.Text)} {
+		if target == "" {
+			continue
+		}
+		offset := 0
+		for offset <= len(plain) {
+			found := strings.Index(plain[offset:], target)
+			if found < 0 {
+				break
+			}
+			start := offset + found
+			end := start + lipgloss.Width(target)
+			if x >= start && x < end {
+				return target, start, end, true
+			}
+			offset = start + max(1, len(target))
+		}
+	}
+	return "", -1, -1, false
 }
 
 func focusedLinkTarget(plain string, link md.Link) (string, int) {
