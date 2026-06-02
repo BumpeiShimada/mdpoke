@@ -399,6 +399,28 @@ func TestRenderTableWrapsWhenColumnIsTooWide(t *testing.T) {
 	}
 }
 
+func TestRenderHardWrapsLongTextWithoutSpaces(t *testing.T) {
+	source := "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\n"
+
+	rendered, err := Render(source, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := StripANSI(rendered)
+	lines := strings.Split(strings.TrimSpace(plain), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected long text to wrap, got:\n%s", plain)
+	}
+	for _, line := range lines {
+		if displayWidth(line) > 24 {
+			t.Fatalf("line width = %d, want <= 24 for %q:\n%s", displayWidth(line), line, plain)
+		}
+	}
+	if !strings.Contains(plain, "↪ ") {
+		t.Fatalf("expected continuation marker in wrapped text:\n%s", plain)
+	}
+}
+
 func leadingSpaces(s string) int {
 	count := 0
 	for _, r := range s {

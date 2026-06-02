@@ -792,7 +792,7 @@ func (m Model) helpOverlay() string {
 }
 
 func (m Model) modalOverlay(base string) string {
-	boxWidth := min(66, max(34, m.width-10))
+	boxWidth := m.modalBoxWidth()
 	contentWidth := max(12, boxWidth-4)
 	title := titleStyle.Render(m.modalTitle)
 	topRuleWidth := max(0, boxWidth-2-lipgloss.Width(md.StripANSI(title)))
@@ -806,8 +806,10 @@ func (m Model) modalOverlay(base string) string {
 		if m.modalKind == modalConfirmJump && i == len(bodyLines)-1 {
 			line = confirmButtonStyle.Render("y confirm") + "   " + cancelButtonStyle.Render("n cancel")
 		}
-		padded := padANSIToWidth(line, contentWidth)
-		lines = append(lines, "│ "+padded+" │")
+		for _, wrapped := range wrapANSIHard(line, contentWidth) {
+			padded := padANSIToWidth(wrapped, contentWidth)
+			lines = append(lines, "│ "+padded+" │")
+		}
 	}
 	lines = append(lines, bottom)
 
@@ -858,11 +860,15 @@ func (m Model) modalBoxBounds() (int, int, int, int, bool) {
 	if m.modalKind == modalNone {
 		return 0, 0, 0, 0, false
 	}
-	boxWidth := min(66, max(34, m.width-10))
+	boxWidth := m.modalBoxWidth()
 	boxHeight := m.modalHeight()
 	boxLeft := max(0, (m.width-boxWidth)/2)
 	boxTop := max(0, (m.height-boxHeight)/2)
 	return boxLeft, boxTop, boxWidth, boxHeight, true
+}
+
+func (m Model) modalBoxWidth() int {
+	return min(66, max(34, m.width-10))
 }
 
 func (m Model) mouseInModal(msg tea.MouseMsg) bool {
@@ -909,7 +915,16 @@ func (m Model) modalHeight() int {
 	if m.modalKind == modalNone {
 		return 0
 	}
-	return len(strings.Split(m.modalBody, "\n")) + 2
+	contentWidth := max(12, m.modalBoxWidth()-4)
+	bodyLines := strings.Split(m.modalBody, "\n")
+	height := 2
+	for i, line := range bodyLines {
+		if m.modalKind == modalConfirmJump && i == len(bodyLines)-1 {
+			line = "y confirm   n cancel"
+		}
+		height += len(wrapANSIHard(line, contentWidth))
+	}
+	return height
 }
 
 func (m *Model) toggleOutline() {
@@ -1475,11 +1490,9 @@ func (m Model) styleBareAutoLinks(lines []string) {
 		if link.Text != link.URL || !hasScheme(link.URL) {
 			continue
 		}
-		line := m.lineForLink(link)
-		if line < 0 || line >= len(lines) {
-			continue
+		for line := range lines {
+			lines[line] = styleBareAutoLink(lines[line], strings.TrimSpace(link.URL))
 		}
-		lines[line] = styleBareAutoLink(lines[line], strings.TrimSpace(link.URL))
 	}
 }
 
@@ -1490,15 +1503,15 @@ func styleBareAutoLink(line, target string) string {
 	plain := md.StripANSI(line)
 	offset := 0
 	for offset <= len(plain) {
-		found := strings.Index(plain[offset:], target)
-		if found < 0 {
+		segment, segmentStart, segmentEnd, ok := bestLinkSegmentInLine(plain[offset:], target)
+		if !ok {
 			break
 		}
-		startByte := offset + found
+		startByte := offset + segmentStart
 		start := lipgloss.Width(plain[:startByte])
-		end := start + lipgloss.Width(target)
+		end := start + lipgloss.Width(segment)
 		line = styleANSIVisibleRangePlain(line, start, end, bareAutoLinkStyle)
-		offset = startByte + max(1, len(target))
+		offset += segmentEnd
 	}
 	return line
 }
@@ -1619,17 +1632,17 @@ func clickedLinkTarget(plain string, link md.Link, x int) (string, int, int, boo
 		}
 		offset := 0
 		for offset <= len(plain) {
-			found := strings.Index(plain[offset:], target)
-			if found < 0 {
+			segment, segmentStart, segmentEnd, ok := linkTargetSegmentInLine(plain[offset:], target, link)
+			if !ok {
 				break
 			}
-			startByte := offset + found
+			startByte := offset + segmentStart
 			start := lipgloss.Width(plain[:startByte])
-			end := start + lipgloss.Width(target)
+			end := start + lipgloss.Width(segment)
 			if x >= start && x < end {
-				return target, start, end, true
+				return segment, start, end, true
 			}
-			offset = startByte + max(1, len(target))
+			offset += segmentEnd
 		}
 	}
 	return "", -1, -1, false
@@ -1640,11 +1653,73 @@ func focusedLinkTarget(plain string, link md.Link) (string, int) {
 		if target == "" {
 			continue
 		}
-		if start := strings.Index(plain, target); start >= 0 {
-			return target, lipgloss.Width(plain[:start])
+		if segment, start, _, ok := linkTargetSegmentInLine(plain, target, link); ok {
+			return segment, lipgloss.Width(plain[:start])
 		}
 	}
 	return "", -1
+}
+
+func linkTargetSegmentInLine(line, target string, link md.Link) (string, int, int, bool) {
+	if segment, start, end, ok := exactLinkSegmentInLine(line, target); ok {
+		return segment, start, end, true
+	}
+	if link.Text == link.URL && hasScheme(link.URL) {
+		return bestLinkSegmentInLine(line, target)
+	}
+	return "", 0, 0, false
+}
+
+func exactLinkSegmentInLine(line, target string) (string, int, int, bool) {
+	start := strings.Index(line, target)
+	if start < 0 {
+		return "", 0, 0, false
+	}
+	return target, start, start + len(target), true
+}
+
+func bestLinkSegmentInLine(line, target string) (string, int, int, bool) {
+	if segment, start, end, ok := exactLinkSegmentInLine(line, target); ok {
+		return segment, start, end, true
+	}
+
+	bounds := runeBoundaries(line)
+	bestStart, bestEnd, bestWidth := 0, 0, 0
+	minWidth := min(6, lipgloss.Width(target))
+	for i := 0; i < len(bounds)-1; i++ {
+		for j := len(bounds) - 1; j > i; j-- {
+			segment := strings.Trim(line[bounds[i]:bounds[j]], " ↪<>")
+			if segment == "" || !strings.Contains(target, segment) {
+				continue
+			}
+			width := lipgloss.Width(segment)
+			if width < minWidth {
+				continue
+			}
+			if !strings.ContainsAny(segment, ":/.-_?&=#%") && !strings.Contains(line, "↪") {
+				continue
+			}
+			if width > bestWidth {
+				trimmedStart := bounds[i] + strings.Index(line[bounds[i]:bounds[j]], segment)
+				bestStart = trimmedStart
+				bestEnd = trimmedStart + len(segment)
+				bestWidth = width
+			}
+			break
+		}
+	}
+	if bestWidth <= 0 {
+		return "", 0, 0, false
+	}
+	return line[bestStart:bestEnd], bestStart, bestEnd, true
+}
+
+func runeBoundaries(s string) []int {
+	bounds := make([]int, 0, utf8.RuneCountInString(s)+1)
+	for i := range s {
+		bounds = append(bounds, i)
+	}
+	return append(bounds, len(s))
 }
 
 func (m Model) styleFocusedJump(line string) string {
@@ -1935,6 +2010,7 @@ func normalizeMarkdownLine(line string) string {
 	line = strings.TrimSpace(line)
 	line = listMarkerRE.ReplaceAllString(line, "")
 	line = markdownLinkRE.ReplaceAllString(line, "$1")
+	line = strings.Trim(line, "<>")
 	line = strings.Trim(line, "`*_~")
 	if len(line) > 48 {
 		line = line[:48]
@@ -2140,6 +2216,29 @@ func wrapDisplayHard(s string, width int) []string {
 	}
 	lines = append(lines, current.String())
 	return lines
+}
+
+func wrapANSIHard(line string, width int) []string {
+	if width <= 0 || lipgloss.Width(md.StripANSI(line)) <= width {
+		return []string{line}
+	}
+	totalWidth := lipgloss.Width(md.StripANSI(line))
+	lines := make([]string, 0, (totalWidth/width)+1)
+	for start := 0; start < totalWidth; start += width {
+		end := min(totalWidth, start+width)
+		lines = append(lines, ansiVisibleColumnSlice(line, start, end))
+	}
+	return lines
+}
+
+func ansiVisibleColumnSlice(line string, start, end int) string {
+	startByte := ansiVisibleColumnByteIndex(line, start)
+	endByte := ansiVisibleColumnByteIndex(line, end)
+	segment := line[startByte:endByte]
+	if active := activeSGRAt(line, startByte); active != "" {
+		return active + segment + "\x1b[0m"
+	}
+	return segment
 }
 
 func ansiVisibleRangeBytes(line string, start, end int) (int, int, bool) {

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -107,7 +108,164 @@ func Render(markdown string, width int) (string, error) {
 		return "", err
 	}
 	rendered = replaceCustomBlocks(rendered, blocks)
+	rendered = hardWrapRendered(rendered, width)
 	return strings.TrimRight(rendered, "\n") + "\n", nil
+}
+
+func hardWrapRendered(rendered string, width int) string {
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		wrapped = append(wrapped, hardWrapANSILine(line, width)...)
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func hardWrapANSILine(line string, width int) []string {
+	if width <= 0 || lipgloss.Width(StripANSI(line)) <= width {
+		return []string{line}
+	}
+
+	prefix := wrapContinuationPrefix(line, width)
+	prefixWidth := lipgloss.Width(prefix)
+	nextWidth := max(1, width-prefixWidth)
+	totalWidth := lipgloss.Width(StripANSI(line))
+	lines := make([]string, 0, (totalWidth/width)+1)
+
+	start := 0
+	segmentWidth := width
+	for start < totalWidth {
+		end := min(totalWidth, start+segmentWidth)
+		segment := ansiVisibleColumnSlice(line, start, end)
+		if start > 0 {
+			segment = prefix + segment
+		}
+		lines = append(lines, segment)
+		start = end
+		segmentWidth = nextWidth
+	}
+	return lines
+}
+
+func wrapContinuationPrefix(line string, width int) string {
+	indent := renderedLeadingWhitespace(StripANSI(line))
+	prefix := indent + "↪ "
+	if lipgloss.Width(prefix) < width {
+		return prefix
+	}
+	if width > lipgloss.Width("↪ ") {
+		return "↪ "
+	}
+	return ""
+}
+
+func renderedLeadingWhitespace(line string) string {
+	var b strings.Builder
+	for _, r := range line {
+		if r != ' ' && r != '\t' {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func ansiVisibleColumnSlice(line string, start, end int) string {
+	startByte := ansiVisibleColumnByteIndex(line, start)
+	endByte := ansiVisibleColumnByteIndex(line, end)
+	segment := line[startByte:endByte]
+	if active := activeSGRAt(line, startByte); active != "" {
+		return active + segment + "\x1b[0m"
+	}
+	return segment
+}
+
+func ansiVisibleColumnByteIndex(line string, column int) int {
+	if column <= 0 {
+		return 0
+	}
+	visible := 0
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			next := i + 1
+			if next < len(line) && line[next] == '[' {
+				next++
+				for next < len(line) {
+					if line[next] >= '@' && line[next] <= '~' {
+						next++
+						break
+					}
+					next++
+				}
+				i = next
+				continue
+			}
+			if next < len(line) && line[next] == ']' {
+				next++
+				for next < len(line) {
+					if line[next] == '\a' {
+						next++
+						break
+					}
+					if line[next] == '\x1b' && next+1 < len(line) && line[next+1] == '\\' {
+						next += 2
+						break
+					}
+					next++
+				}
+				i = next
+				continue
+			}
+		}
+
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if size <= 0 {
+			size = 1
+		}
+		nextVisible := visible + lipgloss.Width(string(r))
+		if nextVisible > column {
+			return i
+		}
+		if nextVisible == column {
+			return i + size
+		}
+		visible = nextVisible
+		i += size
+	}
+	return len(line)
+}
+
+func activeSGRAt(line string, byteIndex int) string {
+	active := ""
+	for i := 0; i < len(line) && i < byteIndex; {
+		if line[i] != '\x1b' || i+1 >= len(line) || line[i+1] != '[' {
+			_, size := utf8.DecodeRuneInString(line[i:])
+			if size <= 0 {
+				size = 1
+			}
+			i += size
+			continue
+		}
+
+		end := i + 2
+		for end < len(line) {
+			if line[end] >= '@' && line[end] <= '~' {
+				end++
+				break
+			}
+			end++
+		}
+		seq := line[i:end]
+		if strings.HasSuffix(seq, "m") {
+			if seq == "\x1b[0m" || strings.Contains(seq, "[0;") || strings.Contains(seq, ";0m") {
+				active = ""
+			} else {
+				active += seq
+			}
+		}
+		i = end
+	}
+	return active
 }
 
 func mdpokeStyleJSON() string {

@@ -131,6 +131,30 @@ func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
 	}
 }
 
+func TestRenderContentHighlightsWrappedBareAutolinkSegments(t *testing.T) {
+	url := "https://example.com/path/to/日本語リソース名"
+	model := New(md.Document{
+		Rendered: "こちらがURL: https://example.com/path/to/\n  ↪ 日本語リソース名\n",
+		Raw:      "こちらがURL: " + url + "\n",
+		Links: []md.Link{
+			{Text: url, URL: url, Line: 1},
+		},
+	})
+	oldBareAutoLinkStyle := bareAutoLinkStyle
+	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
+	defer func() {
+		bareAutoLinkStyle = oldBareAutoLinkStyle
+	}()
+
+	rendered := model.renderContent()
+	if !strings.Contains(rendered, "[https://example.com/path/to/]") {
+		t.Fatalf("expected first wrapped URL segment to be highlighted, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[日本語リソース名]") {
+		t.Fatalf("expected continuation URL segment to be highlighted, got %q", rendered)
+	}
+}
+
 func TestFixtureFirstExternalLinkFocusIsVisible(t *testing.T) {
 	model, _ := fixtureModel(t)
 	index := linkIndexByURL(t, model.doc.Links, "https://example.com")
@@ -175,6 +199,40 @@ func TestModalOverlayKeepsBorderColumnsAlignedWithStyledContent(t *testing.T) {
 		if rightColumn != wantRight {
 			t.Fatalf("right border column = %d, want %d in %q", rightColumn, wantRight, plain)
 		}
+	}
+}
+
+func TestModalOverlayWrapsLongURLWithinBorders(t *testing.T) {
+	model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+	model.width = 52
+	model.height = 12
+	model.ready = true
+	model.modalKind = modalConfirmJump
+	model.modalTitle = "Jump?"
+	model.modalBody = "Jump to https://example.com/path/to/veryveryverylongresource-name-without-spaces?\n\n" + mutedStyle.Render("y confirm   n cancel")
+
+	rendered := model.modalOverlay(strings.Repeat(strings.Repeat(" ", model.width)+"\n", model.height))
+	lines := strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
+	left, _, boxWidth, _, ok := model.modalBoxBounds()
+	if !ok {
+		t.Fatal("expected modal bounds")
+	}
+	wantRight := left + boxWidth - 1
+	bodyRows := 0
+	for _, line := range lines {
+		plain := md.StripANSI(line)
+		if !strings.Contains(plain, "│") {
+			continue
+		}
+		bodyRows++
+		right := strings.LastIndex(plain, "│")
+		rightColumn := lipgloss.Width(plain[:right])
+		if rightColumn != wantRight {
+			t.Fatalf("right border column = %d, want %d in %q", rightColumn, wantRight, plain)
+		}
+	}
+	if bodyRows < 4 {
+		t.Fatalf("expected long modal body to wrap across rows, got %d:\n%s", bodyRows, rendered)
 	}
 }
 
@@ -516,6 +574,7 @@ func TestNormalizeMarkdownLine(t *testing.T) {
 	tests := map[string]string{
 		"## Heading":               "Heading",
 		"  - [Docs](docs/plan.md)": "Docs",
+		"<https://example.com>":    "https://example.com",
 		"1. **Numbered item**":     "Numbered item",
 		"plain text":               "plain text",
 		"`code`":                   "code",
@@ -1204,6 +1263,25 @@ func TestClickURLAfterNonASCIITextUsesDisplayColumns(t *testing.T) {
 	link, ok := model.linkAtRenderedPosition(0, x, 1)
 	if !ok {
 		t.Fatal("expected URL to be clickable after non-ASCII text")
+	}
+	if link.URL != url {
+		t.Fatalf("URL = %q, want %q", link.URL, url)
+	}
+}
+
+func TestClickWrappedBareURLContinuationCopiesFullURL(t *testing.T) {
+	url := "https://example.com/path/to/日本語リソース名"
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: url, URL: url, Line: 1},
+		},
+		Rendered: "こちらがURL: https://example.com/path/to/\n  ↪ 日本語リソース名\n",
+		Raw:      "こちらがURL: " + url + "\n",
+	})
+
+	link, ok := model.linkAtRenderedPosition(1, lipgloss.Width("  ↪ 日本"), 1)
+	if !ok {
+		t.Fatal("expected wrapped URL continuation to be clickable")
 	}
 	if link.URL != url {
 		t.Fatalf("URL = %q, want %q", link.URL, url)
