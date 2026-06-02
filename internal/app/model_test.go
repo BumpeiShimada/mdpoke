@@ -236,6 +236,50 @@ func TestModalOverlayWrapsLongURLWithinBorders(t *testing.T) {
 	}
 }
 
+func TestModalOverlayKeepsRectangleOnStyledNarrowBase(t *testing.T) {
+	model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+	model.width = 44
+	model.height = 12
+	model.ready = true
+	model.modalKind = modalConfirmJump
+	model.modalTitle = "Jump To A Very Long Wrapped URL?"
+	model.modalBody = "Jump to https://example.com/path/to/very-long-resource-name-without-spaces-and-日本語?\n\n" + mutedStyle.Render("y confirm   n cancel")
+
+	baseLine := lipgloss.NewStyle().Background(lipgloss.Color("238")).Render(strings.Repeat("x", model.width))
+	base := strings.Repeat(baseLine+"\n", model.height)
+	rendered := model.modalOverlay(base)
+	lines := strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
+	left, _, boxWidth, _, ok := model.modalBoxBounds()
+	if !ok {
+		t.Fatal("expected modal bounds")
+	}
+	wantRight := left + boxWidth - 1
+	boxRows := 0
+
+	for _, line := range lines {
+		plain := md.StripANSI(line)
+		if !strings.ContainsAny(plain, "╭│╰") {
+			continue
+		}
+		boxRows++
+		leftBorder := strings.IndexAny(plain, "╭│╰")
+		rightBorder := max(strings.LastIndex(plain, "╮"), strings.LastIndex(plain, "│"))
+		rightBorder = max(rightBorder, strings.LastIndex(plain, "╯"))
+		if leftBorder < 0 || rightBorder < 0 {
+			t.Fatalf("missing modal border in %q", plain)
+		}
+		if lipgloss.Width(plain[:leftBorder]) != left {
+			t.Fatalf("left border column = %d, want %d in %q", lipgloss.Width(plain[:leftBorder]), left, plain)
+		}
+		if lipgloss.Width(plain[:rightBorder]) != wantRight {
+			t.Fatalf("right border column = %d, want %d in %q", lipgloss.Width(plain[:rightBorder]), wantRight, plain)
+		}
+	}
+	if boxRows != model.modalHeight() {
+		t.Fatalf("box rows = %d, want modal height %d:\n%s", boxRows, model.modalHeight(), rendered)
+	}
+}
+
 func TestGuideLabelsTabAsCheckboxFocus(t *testing.T) {
 	model := New(md.Document{
 		Rendered: "[ ] Pending\n",
@@ -2159,4 +2203,85 @@ func BenchmarkLinkAtRenderedPositionLargeDocument(b *testing.B) {
 			b.Fatal("missing link")
 		}
 	}
+}
+
+func BenchmarkRenderContentLargeDocument(b *testing.B) {
+	model := newLargeInteractionModel(1200)
+	model.selectedTask = len(model.tasks) - 1
+	model.selectedLink = len(model.doc.Links) - 1
+	model.searchQuery = "Task"
+	model.searchMatches = FindMatches(model.contentLines, model.searchQuery)
+	model.selectedMatch = len(model.searchMatches) - 1
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = model.renderContent()
+	}
+}
+
+func BenchmarkFocusNextTaskLargeDocument(b *testing.B) {
+	model := newLargeInteractionModel(1200)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		model.focusNextTask(1)
+	}
+}
+
+func BenchmarkMoveOutlineLargeDocument(b *testing.B) {
+	model := newLargeInteractionModel(1200)
+	model.outlineVisible = true
+	model.selectedOutline = 0
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		model.moveOutline(1)
+	}
+}
+
+func BenchmarkToggleTaskLargeDocument(b *testing.B) {
+	model := newLargeInteractionModel(300)
+	model.selectedTask = 0
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		model.toggleTask(0)
+	}
+}
+
+func newLargeInteractionModel(itemCount int) Model {
+	rawLines := make([]string, 0, itemCount*2)
+	renderedLines := make([]string, 0, itemCount*2)
+	outline := make([]md.Heading, 0, itemCount)
+	links := make([]md.Link, 0, itemCount*2)
+
+	for i := 0; i < itemCount; i++ {
+		headingLine := len(rawLines) + 1
+		headingText := fmt.Sprintf("Heading %04d", i)
+		rawLines = append(rawLines, "# "+headingText)
+		renderedLines = append(renderedLines, headingText)
+		outline = append(outline, md.Heading{Level: 1, Text: headingText, Line: headingLine, Parent: -1})
+
+		linkText := fmt.Sprintf("Link %04d", i)
+		linkURL := fmt.Sprintf("https://example.com/%04d", i)
+		bareURL := fmt.Sprintf("https://example.org/%04d", i)
+		taskLine := len(rawLines) + 1
+		rawLines = append(rawLines, fmt.Sprintf("- [ ] Task %04d uses [%s](%s) and %s", i, linkText, linkURL, bareURL))
+		renderedLines = append(renderedLines, fmt.Sprintf("[ ] Task %04d uses %s and %s", i, linkText, bareURL))
+		links = append(links,
+			md.Link{Text: linkText, URL: linkURL, Line: taskLine},
+			md.Link{Text: bareURL, URL: bareURL, Line: taskLine},
+		)
+	}
+
+	return New(md.Document{
+		Outline:  outline,
+		Links:    links,
+		Rendered: strings.Join(renderedLines, "\n") + "\n",
+		Raw:      strings.Join(rawLines, "\n") + "\n",
+	})
 }

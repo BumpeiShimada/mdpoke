@@ -114,14 +114,21 @@ type Model struct {
 
 	loadOptions md.LoadOptions
 
-	renderedLines []string
-	contentLines  []string
-	rawToRendered []int
-	renderedToRaw []int
-	tasks         []taskItem
-	searchQuery   string
-	searchMatches []SearchMatch
-	selectedMatch int
+	renderedLines  []string
+	contentLines   []string
+	rawToRendered  []int
+	renderedToRaw  []int
+	tasks          []taskItem
+	taskLines      []int
+	tasksByRaw     map[int][]int
+	linkLines      []int
+	linksByRaw     map[int][]int
+	linksByLine    map[int][]int
+	bareLinksByRaw map[int][]int
+	focusableLinks []int
+	searchQuery    string
+	searchMatches  []SearchMatch
+	selectedMatch  int
 
 	textSelectionStart    selectionPoint
 	textSelectionEnd      selectionPoint
@@ -390,7 +397,7 @@ func (m *Model) updateModalMouse(msg tea.MouseMsg) {
 	if !m.mouseInModal(msg) {
 		m.dismissModal()
 		if m.clearLineSelection() {
-			m.rebuildContent()
+			m.refreshContent()
 		}
 		return
 	}
@@ -563,8 +570,46 @@ func (m *Model) rebuildContent() {
 	if m.selectedTask >= len(m.tasks) {
 		m.selectedTask = -1
 	}
+	m.rebuildLineIndexes()
+	m.refreshContent()
+	m.refreshOutline()
+}
+
+func (m *Model) refreshContent() {
 	m.body.SetContent(m.renderContent())
+}
+
+func (m *Model) refreshOutline() {
 	m.outline.SetContent(m.renderOutline())
+}
+
+func (m *Model) rebuildLineIndexes() {
+	m.taskLines = make([]int, len(m.tasks))
+	m.tasksByRaw = make(map[int][]int, len(m.tasks))
+	for i, task := range m.tasks {
+		m.taskLines[i] = m.resolveTaskLine(task)
+		m.tasksByRaw[task.Line] = append(m.tasksByRaw[task.Line], i)
+	}
+
+	m.linkLines = make([]int, len(m.doc.Links))
+	m.linksByRaw = make(map[int][]int, len(m.doc.Links))
+	m.linksByLine = make(map[int][]int, len(m.doc.Links))
+	m.bareLinksByRaw = make(map[int][]int)
+	m.focusableLinks = m.focusableLinks[:0]
+	for i, link := range m.doc.Links {
+		line := m.resolveLinkLine(link)
+		m.linkLines[i] = line
+		m.linksByRaw[link.Line] = append(m.linksByRaw[link.Line], i)
+		if line >= 0 {
+			m.linksByLine[line] = append(m.linksByLine[line], i)
+		}
+		if link.Text == link.URL && hasScheme(link.URL) {
+			m.bareLinksByRaw[link.Line] = append(m.bareLinksByRaw[link.Line], i)
+		}
+		if !m.isInternalJumpLink(link) {
+			m.focusableLinks = append(m.focusableLinks, i)
+		}
+	}
 }
 
 func (m Model) renderContent() string {
@@ -594,15 +639,14 @@ func (m Model) renderContent() string {
 
 	if m.selectedLink >= 0 && m.selectedLink < len(m.doc.Links) {
 		link := m.doc.Links[m.selectedLink]
-		line := m.lineForLink(link)
+		line := m.lineForLinkIndex(m.selectedLink)
 		if line >= 0 && line < len(lines) {
 			lines[line] = m.styleFocusedLink(lines[line], link)
 		}
 	}
 
 	if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
-		task := m.tasks[m.selectedTask]
-		line := m.lineForTask(task)
+		line := m.lineForTaskIndex(m.selectedTask)
 		if line >= 0 && line < len(lines) {
 			lines[line] = styleFocusedTaskCheckbox(lines[line])
 		}
@@ -827,8 +871,8 @@ func (m Model) helpOverlay() string {
 func (m Model) modalOverlay(base string) string {
 	boxWidth := m.modalBoxWidth()
 	contentWidth := max(12, boxWidth-4)
-	title := titleStyle.Render(m.modalTitle)
-	topRuleWidth := max(0, boxWidth-2-lipgloss.Width(md.StripANSI(title)))
+	title := ansiVisibleColumnSlice(titleStyle.Render(m.modalTitle), 0, boxWidth-2)
+	topRuleWidth := max(0, boxWidth-2-ansiDisplayWidth(title))
 	topBorder := "╭" + title + strings.Repeat("─", topRuleWidth) + "╮"
 	bottom := "╰" + strings.Repeat("─", max(0, boxWidth-2)) + "╯"
 
@@ -845,6 +889,9 @@ func (m Model) modalOverlay(base string) string {
 		}
 	}
 	lines = append(lines, bottom)
+	for i, line := range lines {
+		lines[i] = normalizeANSIWidth(line, boxWidth)
+	}
 
 	box := strings.Join(lines, "\n")
 	left, top, _, _, ok := m.modalBoxBounds()
@@ -870,9 +917,18 @@ func overlayBoxAt(base, box string, left, top int) string {
 		if strings.TrimSpace(boxLine) == "" {
 			continue
 		}
-		baseLines[target] = replaceVisibleColumns(baseLines[target], left, left+lipgloss.Width(boxLine), boxLine)
+		baseLines[target] = replaceVisibleColumns(baseLines[target], left, left+ansiDisplayWidth(boxLine), boxLine)
 	}
 	return strings.Join(baseLines, "\n")
+}
+
+func ansiDisplayWidth(line string) int {
+	return lipgloss.Width(md.StripANSI(line))
+}
+
+func normalizeANSIWidth(line string, width int) string {
+	line = ansiVisibleColumnSlice(line, 0, width)
+	return padANSIToWidth(line, width)
 }
 
 func replaceVisibleColumns(line string, start, end int, replacement string) string {
@@ -978,12 +1034,12 @@ func (m *Model) moveOutline(delta int) {
 	m.selectedOutline = clamp(m.selectedOutline+delta, 0, len(m.doc.Outline)-1)
 	m.outline.SetYOffset(clamp(m.outlineLineForHeading(m.selectedOutline)-2, 0, max(0, len(m.outlineLineMap)-1)))
 	m.focusOutlineHeading(m.selectedOutline)
-	m.outline.SetContent(m.renderOutline())
+	m.refreshOutline()
 }
 
 func (m *Model) selectCurrentOutline() {
 	m.selectedOutline = m.currentHeadingIndex()
-	m.outline.SetContent(m.renderOutline())
+	m.refreshOutline()
 }
 
 func (m *Model) focusOutlineHeading(index int) {
@@ -992,7 +1048,7 @@ func (m *Model) focusOutlineHeading(index int) {
 	}
 	m.focusedOutline = index
 	m.jumpToRenderedLineNearTop(m.lineForRaw(m.doc.Outline[index].Line), 6)
-	m.rebuildContent()
+	m.refreshContent()
 }
 
 func (m Model) currentHeadingIndex() int {
@@ -1013,18 +1069,18 @@ func (m *Model) applySearch(query string) {
 	m.selectedMatch = -1
 	if query == "" {
 		m.status = ""
-		m.rebuildContent()
+		m.refreshContent()
 		return
 	}
 	if len(m.searchMatches) == 0 {
 		m.status = fmt.Sprintf("no matches for %q", query)
-		m.rebuildContent()
+		m.refreshContent()
 		return
 	}
 	m.selectedMatch = 0
 	m.status = fmt.Sprintf("%d matches", len(m.searchMatches))
 	m.jumpToRenderedLine(m.searchMatches[0].Line, true)
-	m.rebuildContent()
+	m.refreshContent()
 }
 
 func (m *Model) moveSearchMatch(delta int) {
@@ -1037,7 +1093,7 @@ func (m *Model) moveSearchMatch(delta int) {
 		m.selectedMatch = (m.selectedMatch + delta + len(m.searchMatches)) % len(m.searchMatches)
 	}
 	m.jumpToRenderedLine(m.searchMatches[m.selectedMatch].Line, true)
-	m.rebuildContent()
+	m.refreshContent()
 }
 
 func FindMatches(lines []string, query string) []SearchMatch {
@@ -1072,7 +1128,7 @@ func (m *Model) focusNextTask(delta int) {
 	if len(m.tasks) == 0 {
 		m.showMessage("No Checkboxes", fmt.Sprintf("No checkboxes in this document.\n\n%s", mutedStyle.Render("press any key to close")))
 		if hadSelection {
-			m.rebuildContent()
+			m.refreshContent()
 		}
 		return
 	}
@@ -1089,8 +1145,8 @@ func (m *Model) focusNextTask(delta int) {
 
 	task := m.tasks[m.selectedTask]
 	m.status = m.taskStatus(task)
-	m.jumpToRenderedLine(m.lineForTask(task), false)
-	m.rebuildContent()
+	m.jumpToRenderedLine(m.lineForTaskIndex(m.selectedTask), false)
+	m.refreshContent()
 }
 
 func (m *Model) toggleSelectedTask() bool {
@@ -1118,7 +1174,19 @@ func (m Model) taskAtMouse(msg tea.MouseMsg) (int, bool) {
 	}
 	renderedLine := m.body.YOffset + msg.Y
 	rawLine := m.rawLineForRendered(renderedLine)
-	for i, task := range m.tasks {
+	indexes := m.tasksByRaw[rawLine]
+	if len(indexes) == 0 {
+		for i, line := range m.taskLines {
+			if line == renderedLine {
+				indexes = append(indexes, i)
+			}
+		}
+	}
+	for _, i := range indexes {
+		if i < 0 || i >= len(m.tasks) {
+			continue
+		}
+		task := m.tasks[i]
 		if task.Line != rawLine && m.lineForTask(task) != renderedLine {
 			continue
 		}
@@ -1157,6 +1225,42 @@ func (m *Model) toggleTask(index int) {
 		}
 	}
 
+	if m.applyFastTaskToggle(index, nextRaw, nextLine) {
+		return
+	}
+	m.renderToggledDocument(nextRaw, task.Line)
+}
+
+func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string) bool {
+	checked, ok := taskLineChecked(nextLine)
+	if !ok {
+		return false
+	}
+	renderedLine := m.lineForTaskIndex(index)
+	if renderedLine < 0 || renderedLine >= len(m.renderedLines) || renderedLine >= len(m.contentLines) {
+		return false
+	}
+	rendered, ok := setRenderedTaskCheckbox(m.renderedLines[renderedLine], checked)
+	if !ok {
+		return false
+	}
+	content, ok := setRenderedTaskCheckbox(m.contentLines[renderedLine], checked)
+	if !ok {
+		return false
+	}
+
+	m.doc.Raw = nextRaw
+	m.renderedLines[renderedLine] = rendered
+	m.contentLines[renderedLine] = content
+	m.doc.Rendered = strings.Join(m.renderedLines, "\n") + "\n"
+	m.stamp = currentFileStamp(m.doc.Path)
+	m.tasks = parseTaskItems(m.doc.Raw)
+	m.rebuildLineIndexes()
+	m.focusToggledTask(index)
+	return true
+}
+
+func (m *Model) renderToggledDocument(nextRaw string, rawLine int) {
 	outline, links := md.ParseStructure([]byte(nextRaw))
 	nextDoc := md.Document{
 		Path:    m.doc.Path,
@@ -1174,16 +1278,34 @@ func (m *Model) toggleTask(index int) {
 	m.doc = renderedDoc
 	m.stamp = currentFileStamp(m.doc.Path)
 	m.rebuildContent()
+	m.focusToggledTaskLine(rawLine)
+}
+
+func (m *Model) focusToggledTask(preferred int) {
+	if preferred >= 0 && preferred < len(m.tasks) {
+		task := m.tasks[preferred]
+		m.selectedTask = preferred
+		m.status = m.taskStatus(task)
+		m.jumpToRenderedLine(m.lineForTaskIndex(preferred), false)
+		m.refreshContent()
+		return
+	}
+	m.selectedTask = -1
+	m.refreshContent()
+}
+
+func (m *Model) focusToggledTaskLine(rawLine int) {
 	for i, nextTask := range m.tasks {
-		if nextTask.Line == task.Line {
+		if nextTask.Line == rawLine {
 			m.selectedTask = i
 			m.status = m.taskStatus(nextTask)
-			m.jumpToRenderedLine(m.lineForTask(nextTask), false)
-			m.rebuildContent()
+			m.jumpToRenderedLine(m.lineForTaskIndex(i), false)
+			m.refreshContent()
 			return
 		}
 	}
 	m.selectedTask = -1
+	m.refreshContent()
 }
 
 func (m Model) taskStatus(task taskItem) string {
@@ -1194,6 +1316,25 @@ func (m Model) taskStatus(task taskItem) string {
 }
 
 func (m Model) lineForTask(task taskItem) int {
+	for i, cached := range m.taskLines {
+		if i < len(m.tasks) && m.tasks[i].Line == task.Line && cached >= 0 {
+			return cached
+		}
+	}
+	return m.resolveTaskLine(task)
+}
+
+func (m Model) lineForTaskIndex(index int) int {
+	if index >= 0 && index < len(m.taskLines) && m.taskLines[index] >= 0 {
+		return m.taskLines[index]
+	}
+	if index >= 0 && index < len(m.tasks) {
+		return m.resolveTaskLine(m.tasks[index])
+	}
+	return 0
+}
+
+func (m Model) resolveTaskLine(task taskItem) int {
 	preferred := m.lineForRaw(task.Line)
 	if lineContainsTaskCheckbox(m.contentLines, preferred, task) {
 		return preferred
@@ -1230,7 +1371,7 @@ func (m *Model) focusNextLink(delta int) {
 	if len(indexes) == 0 {
 		m.status = "no URL links"
 		if hadSelection {
-			m.rebuildContent()
+			m.refreshContent()
 		}
 		return
 	}
@@ -1255,11 +1396,14 @@ func (m *Model) focusNextLink(delta int) {
 	m.selectedLink = indexes[current]
 	link := m.doc.Links[m.selectedLink]
 	m.status = m.linkStatus(link)
-	m.jumpToRenderedLine(m.lineForLink(link), false)
-	m.rebuildContent()
+	m.jumpToRenderedLine(m.lineForLinkIndex(m.selectedLink), false)
+	m.refreshContent()
 }
 
 func (m Model) focusableLinkIndexes() []int {
+	if m.focusableLinks != nil {
+		return m.focusableLinks
+	}
 	indexes := make([]int, 0, len(m.doc.Links))
 	for i, link := range m.doc.Links {
 		if m.isInternalJumpLink(link) {
@@ -1275,7 +1419,7 @@ func (m *Model) focusLinkAtMouse(msg tea.MouseMsg) {
 		return
 	}
 	if m.clearLineSelection() {
-		m.rebuildContent()
+		m.refreshContent()
 	}
 
 	renderedLine := m.body.YOffset + msg.Y
@@ -1315,7 +1459,7 @@ func (m Model) updateOutlineMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.selectedOutline = headingIndex
 	m.focusOutlineHeading(headingIndex)
-	m.outline.SetContent(m.renderOutline())
+	m.refreshOutline()
 	m.status = fmt.Sprintf("jumped to %s", m.doc.Outline[headingIndex].Text)
 	return m, nil
 }
@@ -1368,7 +1512,7 @@ func (m *Model) beginLineSelection(msg tea.MouseMsg) bool {
 		return false
 	}
 	if m.clearLineSelection() {
-		m.rebuildContent()
+		m.refreshContent()
 	}
 	m.textSelectionAnchor = point
 	m.textSelectionDragging = false
@@ -1387,7 +1531,7 @@ func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) bool {
 		m.textSelectionDragging = true
 		m.selectedLink = -1
 		m.status = m.lineSelectionStatus()
-		m.rebuildContent()
+		m.refreshContent()
 		return true
 	case tea.MouseActionRelease:
 		dragging := m.textSelectionDragging
@@ -1396,7 +1540,7 @@ func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) bool {
 			m.textSelectionStart = m.textSelectionAnchor
 			m.textSelectionEnd = point
 			m.status = m.lineSelectionStatus()
-			m.rebuildContent()
+			m.refreshContent()
 		}
 		m.textSelectionAnchor = invalidSelectionPoint()
 		m.textSelectionDragging = false
@@ -1519,14 +1663,46 @@ func (m Model) styleFocusedLink(line string, link md.Link) string {
 }
 
 func (m Model) styleBareAutoLinks(lines []string) {
-	for _, link := range m.doc.Links {
-		if link.Text != link.URL || !hasScheme(link.URL) {
-			continue
-		}
-		for line := range lines {
+	for line := range lines {
+		raw := m.rawLineForRendered(line)
+		for _, linkIndex := range m.bareLinksByRaw[raw] {
+			if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
+				continue
+			}
+			link := m.doc.Links[linkIndex]
+			if link.Text != link.URL || !hasScheme(link.URL) {
+				continue
+			}
 			lines[line] = styleBareAutoLink(lines[line], strings.TrimSpace(link.URL))
 		}
 	}
+}
+
+func (m Model) linkIndexesForRenderedPosition(renderedLine, rawLine int) []int {
+	if len(m.doc.Links) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool)
+	indexes := make([]int, 0, len(m.linksByRaw[rawLine])+len(m.linksByLine[renderedLine]))
+	add := func(index int) {
+		if index < 0 || index >= len(m.doc.Links) || seen[index] {
+			return
+		}
+		seen[index] = true
+		indexes = append(indexes, index)
+	}
+	for _, index := range m.linksByRaw[rawLine] {
+		add(index)
+	}
+	for _, index := range m.linksByLine[renderedLine] {
+		add(index)
+	}
+	if len(indexes) == 0 {
+		for i := range m.doc.Links {
+			add(i)
+		}
+	}
+	return indexes
 }
 
 func styleBareAutoLink(line, target string) string {
@@ -1596,6 +1772,25 @@ func (m *Model) dismissModal() {
 }
 
 func (m Model) lineForLink(link md.Link) int {
+	for i, cached := range m.linkLines {
+		if i < len(m.doc.Links) && m.sameLink(m.doc.Links[i], link) && cached >= 0 {
+			return cached
+		}
+	}
+	return m.resolveLinkLine(link)
+}
+
+func (m Model) lineForLinkIndex(index int) int {
+	if index >= 0 && index < len(m.linkLines) && m.linkLines[index] >= 0 {
+		return m.linkLines[index]
+	}
+	if index >= 0 && index < len(m.doc.Links) {
+		return m.resolveLinkLine(m.doc.Links[index])
+	}
+	return 0
+}
+
+func (m Model) resolveLinkLine(link md.Link) int {
 	preferred := m.lineForRaw(link.Line)
 	if lineContainsFocusedLinkTarget(m.renderedLines, preferred, link) {
 		return preferred
@@ -1616,6 +1811,10 @@ func (m Model) lineForLink(link md.Link) int {
 	return preferred
 }
 
+func (m Model) sameLink(left, right md.Link) bool {
+	return left.Line == right.Line && left.Text == right.Text && left.URL == right.URL
+}
+
 func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bool) {
 	if renderedLine < 0 || renderedLine >= len(m.renderedLines) {
 		return md.Link{}, false
@@ -1623,17 +1822,9 @@ func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bo
 
 	plain := md.StripANSI(m.renderedLines[renderedLine])
 	candidates := make([]md.Link, 0)
-	for _, link := range m.doc.Links {
-		if link.Line == rawLine {
-			candidates = append(candidates, link)
-		}
-	}
-	for _, link := range m.doc.Links {
-		if link.Line == rawLine {
-			continue
-		}
-		if _, _, _, ok := clickedLinkTarget(plain, link, x); ok {
-			candidates = append(candidates, link)
+	for _, index := range m.linkIndexesForRenderedPosition(renderedLine, rawLine) {
+		if index >= 0 && index < len(m.doc.Links) {
+			candidates = append(candidates, m.doc.Links[index])
 		}
 	}
 
@@ -1792,7 +1983,7 @@ func (m *Model) followMarkdownLink(url string) bool {
 			m.focusedJumpLine = heading.Line
 			m.focusedJumpText = heading.Text
 			m.status = fmt.Sprintf("jumped to #%s", anchor)
-			m.rebuildContent()
+			m.refreshContent()
 			return true
 		}
 	}
@@ -1838,7 +2029,7 @@ func (m *Model) clearJumpFocus() {
 	}
 	m.focusedJumpLine = -1
 	m.focusedJumpText = ""
-	m.rebuildContent()
+	m.refreshContent()
 }
 
 func (m *Model) clearOutlineFocus() {
@@ -1846,7 +2037,7 @@ func (m *Model) clearOutlineFocus() {
 		return
 	}
 	m.focusedOutline = -1
-	m.rebuildContent()
+	m.refreshContent()
 }
 
 func (m *Model) clearTransientHighlights() {
@@ -1862,7 +2053,6 @@ func (m *Model) clearTransientHighlights() {
 	m.selectedMatch = -1
 	m.status = ""
 	m.resize()
-	m.rebuildContent()
 }
 
 func (m *Model) copySelection() {
@@ -1909,9 +2099,9 @@ func (m Model) copyTargetLink() (md.Link, bool) {
 	}
 
 	raw := m.rawLineForRendered(m.body.YOffset)
-	for _, link := range m.doc.Links {
-		if link.Line == raw {
-			return link, true
+	for _, index := range m.linksByRaw[raw] {
+		if index >= 0 && index < len(m.doc.Links) {
+			return m.doc.Links[index], true
 		}
 	}
 	return md.Link{}, false
@@ -1960,6 +2150,7 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 	rawLines := strings.Split(raw, "\n")
 	rawToRendered := make([]int, len(rawLines)+1)
 	renderedToRaw := make([]int, max(1, len(rendered)))
+	rawHasRenderedContent := make([]bool, len(rawLines)+1)
 
 	cursor := 0
 	for i, rawLine := range rawLines {
@@ -1967,6 +2158,7 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 		key := normalizeMarkdownLine(rawLine)
 		if key != "" && len(rendered) > 0 {
 			cursor = findRenderedLine(rendered, key, cursor)
+			rawHasRenderedContent[rawNumber] = true
 		}
 		rawToRendered[rawNumber] = cursor
 	}
@@ -1976,7 +2168,11 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 		for nextRaw+1 < len(rawToRendered) && rawToRendered[nextRaw+1] <= line {
 			nextRaw++
 		}
-		renderedToRaw[line] = nextRaw
+		renderedRaw := nextRaw
+		for renderedRaw > 1 && !rawHasRenderedContent[renderedRaw] {
+			renderedRaw--
+		}
+		renderedToRaw[line] = renderedRaw
 	}
 
 	return rawToRendered, renderedToRaw
@@ -2042,6 +2238,31 @@ func toggleTaskLine(line string) (string, bool) {
 		next = " "
 	}
 	return line[:stateStart] + next + line[stateEnd:], true
+}
+
+func taskLineChecked(line string) (bool, bool) {
+	matches := taskLineRE.FindStringSubmatch(line)
+	if matches == nil {
+		return false, false
+	}
+	return strings.EqualFold(matches[2], "x"), true
+}
+
+func setRenderedTaskCheckbox(line string, checked bool) (string, bool) {
+	plain := md.StripANSI(line)
+	loc := renderedTaskCheckboxRE.FindStringIndex(plain)
+	if loc == nil {
+		return line, false
+	}
+	next := "[ ]"
+	if checked {
+		next = "[x]"
+	}
+	start := lipgloss.Width(plain[:loc[0]])
+	end := lipgloss.Width(plain[:loc[1]])
+	startByte := ansiVisibleColumnByteIndex(line, start)
+	endByte := ansiVisibleColumnByteIndex(line, end)
+	return line[:startByte] + next + line[endByte:], true
 }
 
 func normalizeMarkdownLine(line string) string {
@@ -2276,8 +2497,9 @@ func ansiVisibleColumnSlice(line string, start, end int) string {
 	startByte := ansiVisibleColumnByteIndex(line, start)
 	endByte := ansiVisibleColumnByteIndex(line, end)
 	segment := line[startByte:endByte]
-	if active := activeSGRAt(line, startByte); active != "" {
-		return active + segment + "\x1b[0m"
+	prefix := activeSGRAt(line, startByte)
+	if prefix != "" || activeSGRAt(line, endByte) != "" {
+		return prefix + segment + "\x1b[0m"
 	}
 	return segment
 }
