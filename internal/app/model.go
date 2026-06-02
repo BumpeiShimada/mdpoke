@@ -423,6 +423,7 @@ func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) resize() {
+	topRaw := m.rawLineForRendered(m.body.YOffset)
 	m.clearLineSelection()
 
 	contentHeight := max(1, m.height-footerHeight)
@@ -443,6 +444,7 @@ func (m *Model) resize() {
 	m.outline.Width = min(outlineWidth, max(20, m.width/2))
 	m.outline.Height = contentHeight
 	m.rebuildContent()
+	m.body.SetYOffset(clamp(m.lineForRaw(topRaw), 0, max(0, len(m.renderedLines)-1)))
 }
 
 func watchFileCmd() tea.Cmd {

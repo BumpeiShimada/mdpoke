@@ -621,6 +621,84 @@ func TestOpeningOutlineDoesNotFocusHeadingInBody(t *testing.T) {
 	}
 }
 
+func TestToggleOutlinePreservesTopRawLineAfterRewrap(t *testing.T) {
+	longParagraph := strings.Repeat("alpha beta gamma delta ", 18)
+	raw := strings.Join([]string{
+		"# Root",
+		"",
+		longParagraph,
+		"",
+		"## Target",
+		"target body",
+	}, "\n") + "\n"
+	rendered, err := md.Render(raw, 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, _ := md.ParseStructure([]byte(raw))
+	model := New(md.Document{
+		Outline:  outline,
+		Rendered: rendered,
+		Raw:      raw,
+	})
+	model.width = 80
+	model.height = 12
+	model.ready = true
+	model.resize()
+	model.body.SetYOffset(model.lineForRaw(5))
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'o'}}))
+	got := next.(Model)
+
+	if !got.outlineVisible {
+		t.Fatal("outlineVisible = false, want open")
+	}
+	if topRaw := got.rawLineForRendered(got.body.YOffset); topRaw != 5 {
+		t.Fatalf("top raw line = %d, want 5 after outline rewrap; offset=%d target=%d", topRaw, got.body.YOffset, got.lineForRaw(5))
+	}
+	if got.body.YOffset != got.lineForRaw(5) {
+		t.Fatalf("YOffset = %d, want remapped target %d", got.body.YOffset, got.lineForRaw(5))
+	}
+}
+
+func TestToggleOutlineClearsSelectionButKeepsViewportAnchor(t *testing.T) {
+	raw := strings.Join([]string{
+		"# Root",
+		"",
+		strings.Repeat("alpha beta gamma delta ", 14),
+		"",
+		"## Target",
+		"target body",
+	}, "\n") + "\n"
+	rendered, err := md.Render(raw, 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, _ := md.ParseStructure([]byte(raw))
+	model := New(md.Document{
+		Outline:  outline,
+		Rendered: rendered,
+		Raw:      raw,
+	})
+	model.width = 80
+	model.height = 12
+	model.ready = true
+	model.resize()
+	model.body.SetYOffset(model.lineForRaw(5))
+	model.textSelectionStart = selectionPoint{Line: model.lineForRaw(5), Column: 0}
+	model.textSelectionEnd = selectionPoint{Line: model.lineForRaw(5), Column: 6}
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'o'}}))
+	got := next.(Model)
+
+	if _, _, ok := got.textSelectionRange(); ok {
+		t.Fatal("expected outline toggle resize to clear line selection")
+	}
+	if topRaw := got.rawLineForRendered(got.body.YOffset); topRaw != 5 {
+		t.Fatalf("top raw line = %d, want 5 after selection-clearing resize", topRaw)
+	}
+}
+
 func TestMoveOutlineFocusesHeadingNearTopUntilNextKey(t *testing.T) {
 	lines := make([]string, 40)
 	for i := range lines {
