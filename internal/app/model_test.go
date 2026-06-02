@@ -1134,6 +1134,27 @@ func TestClickChoosesLongestOverlappingVisibleLink(t *testing.T) {
 	}
 }
 
+func TestClickURLAfterNonASCIITextUsesDisplayColumns(t *testing.T) {
+	url := "https://example.com/path/to/日本語リソース名"
+	line := "こちらがURL: " + url
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: url, URL: url, Line: 1},
+		},
+		Rendered: line + "\n",
+		Raw:      line + "\n",
+	})
+	x := lipgloss.Width("こちらがURL: ") + lipgloss.Width("https://example.com/path/to/")
+
+	link, ok := model.linkAtRenderedPosition(0, x, 1)
+	if !ok {
+		t.Fatal("expected URL to be clickable after non-ASCII text")
+	}
+	if link.URL != url {
+		t.Fatalf("URL = %q, want %q", link.URL, url)
+	}
+}
+
 func TestClickFixtureAutolinkCopiesURL(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string

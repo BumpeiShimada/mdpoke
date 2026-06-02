@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/yuin/goldmark"
@@ -263,7 +265,86 @@ func ParseStructure(source []byte) ([]Heading, []Link) {
 		return ast.WalkContinue, nil
 	})
 
-	return outline, links
+	return outline, expandBareAutoLinks(source, lineStarts, links)
+}
+
+func expandBareAutoLinks(source []byte, lineStarts []int, links []Link) []Link {
+	for i, link := range links {
+		if link.Text != link.URL || !hasURLScheme(link.URL) || link.Line <= 0 || link.Line > len(lineStarts) {
+			continue
+		}
+
+		lineStart := lineStarts[link.Line-1]
+		lineStop := len(source)
+		if link.Line < len(lineStarts) {
+			lineStop = lineStarts[link.Line] - 1
+		}
+		start := lineStart + bareURLLineOffset(source[lineStart:lineStop], link)
+		if start < lineStart || start >= lineStop {
+			continue
+		}
+
+		stop := scanBareURLStop(source, start, lineStop)
+		if stop <= start {
+			continue
+		}
+		url := string(source[start:stop])
+		links[i].Text = url
+		links[i].URL = url
+		links[i].EndColumn = stop - lineStart + 1
+	}
+	return links
+}
+
+func bareURLLineOffset(line []byte, link Link) int {
+	target := []byte(link.URL)
+	best := -1
+	bestDistance := 0
+	offset := 0
+	for offset <= len(line) {
+		found := bytes.Index(line[offset:], target)
+		if found < 0 {
+			break
+		}
+		index := offset + found
+		distance := abs(index + 1 - link.StartColumn)
+		if best < 0 || distance < bestDistance {
+			best = index
+			bestDistance = distance
+		}
+		step := len(target)
+		if step < 1 {
+			step = 1
+		}
+		offset = index + step
+	}
+	return best
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func hasURLScheme(url string) bool {
+	return strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")
+}
+
+func scanBareURLStop(source []byte, start, lineStop int) int {
+	stop := start
+	for stop < lineStop {
+		r, size := utf8.DecodeRune(source[stop:lineStop])
+		if r == utf8.RuneError && size == 1 {
+			break
+		}
+		if unicode.IsSpace(r) || strings.ContainsRune("<>()[]{}\"'", r) {
+			break
+		}
+		stop += size
+	}
+	return stop
 }
 
 func nearestParent(stack []int, level int) int {

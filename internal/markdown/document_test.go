@@ -77,6 +77,33 @@ func TestParseStructureExtractsLinks(t *testing.T) {
 	}
 }
 
+func TestParseStructureExpandsBareAutolinkWithNonASCIIPath(t *testing.T) {
+	source := []byte("- こちらがURL: https://example.com/path/to/日本語リソース名\n")
+
+	_, links := ParseStructure(source)
+
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d: %#v", len(links), links)
+	}
+	want := "https://example.com/path/to/日本語リソース名"
+	if links[0].Text != want || links[0].URL != want {
+		t.Fatalf("link = %#v, want URL %q", links[0], want)
+	}
+}
+
+func TestParseStructureDoesNotExpandNamedMarkdownLinkDestination(t *testing.T) {
+	source := []byte("[site](https://example.com/path/to/日本語リソース名)\n")
+
+	_, links := ParseStructure(source)
+
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d: %#v", len(links), links)
+	}
+	if links[0].Text != "site" || links[0].URL != "https://example.com/path/to/日本語リソース名" {
+		t.Fatalf("unexpected link: %#v", links[0])
+	}
+}
+
 func TestStripANSIRemovesOSCHyperlinks(t *testing.T) {
 	input := "\x1b]8;;https://example.com\aExample\x1b]8;;\a"
 	if got := StripANSI(input); got != "Example" {

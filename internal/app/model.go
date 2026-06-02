@@ -1000,10 +1000,12 @@ func FindMatches(lines []string, query string) []SearchMatch {
 			if found < 0 {
 				break
 			}
-			start := offset + found
-			end := start + len(query)
+			startByte := offset + found
+			endByte := startByte + len(query)
+			start := lipgloss.Width(line[:startByte])
+			end := start + lipgloss.Width(line[startByte:endByte])
 			matches = append(matches, SearchMatch{Line: lineIndex, Start: start, End: end})
-			offset = end
+			offset = endByte
 		}
 	}
 	return matches
@@ -1457,7 +1459,7 @@ func (m Model) styleFocusedLink(line string, link md.Link) string {
 	plain := md.StripANSI(line)
 	target, start := focusedLinkTarget(plain, link)
 	if start >= 0 {
-		return styleANSIVisibleRange(line, start, start+len(target), linkFocusStyle)
+		return styleANSIVisibleRange(line, start, start+lipgloss.Width(target), linkFocusStyle)
 	}
 	return line
 }
@@ -1476,7 +1478,7 @@ func taskCheckboxColumns(line string) (int, int, bool) {
 	if loc == nil {
 		return 0, 0, false
 	}
-	return loc[0], loc[1], true
+	return lipgloss.Width(line[:loc[0]]), lipgloss.Width(line[:loc[1]]), true
 }
 
 func (m *Model) openJumpConfirm(link md.Link) {
@@ -1582,12 +1584,13 @@ func clickedLinkTarget(plain string, link md.Link, x int) (string, int, int, boo
 			if found < 0 {
 				break
 			}
-			start := offset + found
+			startByte := offset + found
+			start := lipgloss.Width(plain[:startByte])
 			end := start + lipgloss.Width(target)
 			if x >= start && x < end {
 				return target, start, end, true
 			}
-			offset = start + max(1, len(target))
+			offset = startByte + max(1, len(target))
 		}
 	}
 	return "", -1, -1, false
@@ -1599,7 +1602,7 @@ func focusedLinkTarget(plain string, link md.Link) (string, int) {
 			continue
 		}
 		if start := strings.Index(plain, target); start >= 0 {
-			return target, start
+			return target, lipgloss.Width(plain[:start])
 		}
 	}
 	return "", -1
@@ -1609,9 +1612,10 @@ func (m Model) styleFocusedJump(line string) string {
 	plain := md.StripANSI(line)
 	target := strings.TrimSpace(m.focusedJumpText)
 	if target != "" {
-		start := strings.Index(plain, target)
-		if start >= 0 {
-			return styleANSIVisibleRangePlain(line, start, start+len(target), jumpFocusStyle)
+		startByte := strings.Index(plain, target)
+		if startByte >= 0 {
+			start := lipgloss.Width(plain[:startByte])
+			return styleANSIVisibleRangePlain(line, start, start+lipgloss.Width(target), jumpFocusStyle)
 		}
 	}
 	return jumpFocusStyle.Render(line)
@@ -2108,10 +2112,6 @@ func ansiVisibleRangeBytes(line string, start, end int) (int, int, bool) {
 	startByte := -1
 	endByte := -1
 	for i := 0; i < len(line); {
-		if visible == end {
-			endByte = i
-			break
-		}
 		if line[i] == '\x1b' {
 			next := i + 1
 			if next < len(line) && line[next] == '[' {
@@ -2144,16 +2144,24 @@ func ansiVisibleRangeBytes(line string, start, end int) (int, int, bool) {
 			}
 		}
 
-		if visible == start && startByte < 0 {
+		if visible >= start && startByte < 0 {
 			startByte = i
 		}
 
-		_, size := utf8.DecodeRuneInString(line[i:])
+		r, size := utf8.DecodeRuneInString(line[i:])
 		if size <= 0 {
 			size = 1
 		}
-		visible += size
+		width := lipgloss.Width(string(r))
+		if startByte < 0 && visible+width > start {
+			startByte = i
+		}
+		visible += width
 		i += size
+		if visible >= end {
+			endByte = i
+			break
+		}
 	}
 
 	if startByte < 0 {
