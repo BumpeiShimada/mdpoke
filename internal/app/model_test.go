@@ -874,15 +874,16 @@ func TestFixtureInternalAnchorClicksOpenJumpConfirmation(t *testing.T) {
 			model.body.SetYOffset(model.lineForRaw(link.Line))
 			model.focusedJumpLine = -1
 			model.focusedJumpText = ""
+			x := clickXForLink(t, model, link)
 
 			next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
-				X:      1,
+				X:      x,
 				Y:      0,
 				Action: tea.MouseActionPress,
 				Button: tea.MouseButtonLeft,
 			}))
 			next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
-				X:      1,
+				X:      x,
 				Y:      0,
 				Action: tea.MouseActionRelease,
 				Button: tea.MouseButtonLeft,
@@ -954,6 +955,53 @@ func TestClickURLCopiesAndShowsModal(t *testing.T) {
 	}
 }
 
+func TestClickOutsideSingleLinkTextDoesNotCopy(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: "External", URL: "https://example.com", Line: 1},
+		},
+		Rendered: "External trailing text\n",
+		Raw:      "[External](https://example.com) trailing text\n",
+	})
+	model.body.Width = 60
+	model.body.Height = 10
+	x := strings.Index(model.renderedLines[0], "trailing")
+	if x < 0 {
+		t.Fatal("missing trailing text")
+	}
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	if copied != "" {
+		t.Fatalf("copied = %q, want no clipboard write", copied)
+	}
+	if got.modalKind != modalNone {
+		t.Fatalf("modalKind = %d, want no modal", got.modalKind)
+	}
+}
+
 func TestClickChoosesLinkByHorizontalPosition(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
@@ -999,6 +1047,25 @@ func TestClickChoosesLinkByHorizontalPosition(t *testing.T) {
 	}
 	if copied != "https://example.com/path?query=fixture" {
 		t.Fatalf("copied = %q, want external URL", copied)
+	}
+}
+
+func TestClickBetweenTwoLinksDoesNotChooseEither(t *testing.T) {
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: "first", URL: "https://example.com/first", Line: 1},
+			{Text: "second", URL: "https://example.com/second", Line: 1},
+		},
+		Rendered: "first gap second\n",
+		Raw:      "[first](https://example.com/first) gap [second](https://example.com/second)\n",
+	})
+	x := strings.Index(model.renderedLines[0], "gap")
+	if x < 0 {
+		t.Fatal("missing gap text")
+	}
+
+	if link, ok := model.linkAtRenderedPosition(0, x, 1); ok {
+		t.Fatalf("linkAtRenderedPosition returned %#v for gap click", link)
 	}
 }
 
@@ -1607,6 +1674,19 @@ func linkByURL(t *testing.T, links []md.Link, url string) md.Link {
 	}
 	t.Fatalf("missing link %s", url)
 	return md.Link{}
+}
+
+func clickXForLink(t *testing.T, model Model, link md.Link) int {
+	t.Helper()
+	line := model.lineForLink(link)
+	if line < 0 || line >= len(model.renderedLines) {
+		t.Fatalf("link line %d out of range", line)
+	}
+	_, start := focusedLinkTarget(md.StripANSI(model.renderedLines[line]), link)
+	if start < 0 {
+		t.Fatalf("missing rendered target for link %#v on line %q", link, md.StripANSI(model.renderedLines[line]))
+	}
+	return start
 }
 
 func linkIndexByURL(t *testing.T, links []md.Link, url string) int {
