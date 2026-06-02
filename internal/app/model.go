@@ -1122,6 +1122,8 @@ func (m *Model) toggleTask(index int) {
 		if nextTask.Line == task.Line {
 			m.selectedTask = i
 			m.status = m.taskStatus(nextTask)
+			m.jumpToRenderedLine(m.lineForTask(nextTask), false)
+			m.rebuildContent()
 			return
 		}
 	}
