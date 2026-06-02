@@ -70,9 +70,15 @@ type helpItem struct {
 type fileStamp struct {
 	ModTime time.Time
 	Size    int64
+	Mode    os.FileMode
 }
 
 type fileWatchMsg struct{}
+
+type Options struct {
+	NoWatch     bool
+	LoadOptions md.LoadOptions
+}
 
 type Model struct {
 	doc md.Document
@@ -104,6 +110,9 @@ type Model struct {
 	err    error
 	status string
 	stamp  fileStamp
+	watch  bool
+
+	loadOptions md.LoadOptions
 
 	renderedLines []string
 	contentLines  []string
@@ -121,6 +130,10 @@ type Model struct {
 }
 
 func New(doc md.Document) Model {
+	return NewWithOptions(doc, Options{})
+}
+
+func NewWithOptions(doc md.Document, options Options) Model {
 	body := viewport.New(DefaultRenderWidth, 24)
 	body.MouseWheelEnabled = true
 	body.MouseWheelDelta = 4
@@ -149,6 +162,8 @@ func New(doc md.Document) Model {
 		helpInput:       help,
 		width:           DefaultRenderWidth,
 		height:          26,
+		watch:           !options.NoWatch,
+		loadOptions:     options.LoadOptions,
 		selectedOutline: -1,
 		selectedLink:    -1,
 		selectedTask:    -1,
@@ -161,12 +176,15 @@ func New(doc md.Document) Model {
 		textSelectionEnd:    invalidSelectionPoint(),
 		textSelectionAnchor: invalidSelectionPoint(),
 	}
-	m.stamp = currentFileStamp(doc.Path)
+	m.stamp = currentFileStampWithOptions(doc.Path, options.LoadOptions.FollowSymlinks)
 	m.rebuildContent()
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
+	if !m.watch {
+		return nil
+	}
 	return watchFileCmd()
 }
 
@@ -175,6 +193,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case fileWatchMsg:
+		if !m.watch {
+			return m, nil
+		}
 		m.reloadIfFileChanged()
 		return m, watchFileCmd()
 
@@ -454,28 +475,36 @@ func watchFileCmd() tea.Cmd {
 }
 
 func currentFileStamp(path string) fileStamp {
+	return currentFileStampWithOptions(path, false)
+}
+
+func currentFileStampWithOptions(path string, followSymlinks bool) fileStamp {
 	if strings.TrimSpace(path) == "" {
 		return fileStamp{}
 	}
-	info, err := os.Stat(path)
+	stat := os.Lstat
+	if followSymlinks {
+		stat = os.Stat
+	}
+	info, err := stat(path)
 	if err != nil {
 		return fileStamp{}
 	}
-	return fileStamp{ModTime: info.ModTime(), Size: info.Size()}
+	return fileStamp{ModTime: info.ModTime(), Size: info.Size(), Mode: info.Mode()}
 }
 
 func (s fileStamp) changed(next fileStamp) bool {
 	if s.ModTime.IsZero() && next.ModTime.IsZero() {
 		return false
 	}
-	return !s.ModTime.Equal(next.ModTime) || s.Size != next.Size
+	return !s.ModTime.Equal(next.ModTime) || s.Size != next.Size || s.Mode != next.Mode
 }
 
 func (m *Model) reloadIfFileChanged() {
 	if strings.TrimSpace(m.doc.Path) == "" {
 		return
 	}
-	nextStamp := currentFileStamp(m.doc.Path)
+	nextStamp := currentFileStampWithOptions(m.doc.Path, m.loadOptions.FollowSymlinks)
 	if !m.stamp.changed(nextStamp) {
 		return
 	}
@@ -489,15 +518,17 @@ func (m *Model) reloadIfFileChanged() {
 
 func (m *Model) reloadDocumentFromDisk(status string) {
 	width := m.renderWidth()
-	doc, err := md.Load(m.doc.Path, width)
+	options := m.loadOptions
+	options.Width = width
+	doc, err := md.LoadWithOptions(m.doc.Path, options)
 	if err != nil {
 		m.err = err
-		m.status = fmt.Sprintf("reload failed: %v", err)
+		m.status = fmt.Sprintf("reload failed: %s", md.SanitizeMarkdownInput(err.Error()))
 		return
 	}
 	m.doc = doc
 	m.err = nil
-	m.stamp = currentFileStamp(m.doc.Path)
+	m.stamp = currentFileStampWithOptions(m.doc.Path, m.loadOptions.FollowSymlinks)
 	m.selectedLink = -1
 	m.selectedTask = -1
 	m.focusedJumpLine = -1
@@ -697,7 +728,7 @@ func wrapOutlineLine(line, prefix string, width int) []string {
 
 func (m Model) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("render error: %v", m.err))
+		return errorStyle.Render(fmt.Sprintf("render error: %s", md.SanitizeMarkdownInput(m.err.Error())))
 	}
 	if !m.ready {
 		return "loading..."
@@ -1536,22 +1567,25 @@ func taskCheckboxColumns(line string) (int, int, bool) {
 }
 
 func (m *Model) openJumpConfirm(link md.Link) {
+	url := md.SanitizeMarkdownInput(link.URL)
 	m.modalKind = modalConfirmJump
 	m.modalTitle = "Jump?"
-	m.modalBody = fmt.Sprintf("Jump to %s?\n\n%s", link.URL, mutedStyle.Render("y confirm   n cancel"))
-	m.pendingJumpURL = link.URL
+	m.modalBody = fmt.Sprintf("Jump to %s?\n\n%s", url, mutedStyle.Render("y confirm   n cancel"))
+	m.pendingJumpURL = url
 	m.status = ""
 }
 
 func (m *Model) copyClickedURL(link md.Link) {
-	if err := clipboardWrite(link.URL); err != nil {
+	url := md.SanitizeMarkdownInput(link.URL)
+	if err := clipboardWrite(url); err != nil {
+		message := md.SanitizeMarkdownInput(err.Error())
 		m.modalKind = modalMessage
 		m.modalTitle = "Copy Failed"
-		m.modalBody = fmt.Sprintf("%v\n\n%s", err, mutedStyle.Render("press any key to close"))
-		m.status = fmt.Sprintf("copy failed: %v", err)
+		m.modalBody = fmt.Sprintf("%s\n\n%s", message, mutedStyle.Render("press any key to close"))
+		m.status = fmt.Sprintf("copy failed: %s", message)
 		return
 	}
-	m.showCopiedMessage(fmt.Sprintf("copied: %s", link.URL))
+	m.showCopiedMessage(fmt.Sprintf("copied: %s", url))
 }
 
 func (m *Model) dismissModal() {
@@ -1738,13 +1772,15 @@ func (m Model) styleFocusedJump(line string) string {
 }
 
 func (m Model) linkStatus(link md.Link) string {
-	if _, ok := m.anchorForMarkdownLink(link.URL); ok {
-		return fmt.Sprintf("link: enter jump, y copy  %s", link.URL)
+	url := md.SanitizeMarkdownInput(link.URL)
+	if _, ok := m.anchorForMarkdownLink(url); ok {
+		return fmt.Sprintf("link: enter jump, y copy  %s", url)
 	}
-	return fmt.Sprintf("link: y copy  %s", link.URL)
+	return fmt.Sprintf("link: y copy  %s", url)
 }
 
 func (m *Model) followMarkdownLink(url string) bool {
+	url = md.SanitizeMarkdownInput(url)
 	anchor, ok := m.anchorForMarkdownLink(url)
 	if !ok {
 		return false
@@ -1778,6 +1814,7 @@ func (m Model) isInternalJumpLink(link md.Link) bool {
 }
 
 func (m Model) anchorForMarkdownLink(url string) (string, bool) {
+	url = md.SanitizeMarkdownInput(url)
 	if strings.HasPrefix(url, "#") {
 		anchor := strings.TrimPrefix(url, "#")
 		return anchor, anchor != ""
@@ -1832,7 +1869,7 @@ func (m *Model) copySelection() {
 	text, count, ok := m.selectedLineText()
 	if ok {
 		if err := clipboardWrite(text); err != nil {
-			m.status = fmt.Sprintf("copy failed: %v", err)
+			m.status = fmt.Sprintf("copy failed: %s", md.SanitizeMarkdownInput(err.Error()))
 			return
 		}
 		m.showCopiedMessage(fmt.Sprintf("copied %d %s", count, plural(count, "line")))
@@ -1847,11 +1884,12 @@ func (m *Model) copySelectedLink() {
 		m.status = "no link on current line"
 		return
 	}
-	if err := clipboardWrite(link.URL); err != nil {
-		m.status = fmt.Sprintf("copy failed: %v", err)
+	url := md.SanitizeMarkdownInput(link.URL)
+	if err := clipboardWrite(url); err != nil {
+		m.status = fmt.Sprintf("copy failed: %s", md.SanitizeMarkdownInput(err.Error()))
 		return
 	}
-	m.showCopiedMessage(fmt.Sprintf("copied: %s", link.URL))
+	m.showCopiedMessage(fmt.Sprintf("copied: %s", url))
 }
 
 func (m *Model) showCopiedMessage(status string) {
@@ -2007,6 +2045,7 @@ func toggleTaskLine(line string) (string, bool) {
 }
 
 func normalizeMarkdownLine(line string) string {
+	line = md.SanitizeMarkdownInput(line)
 	line = strings.TrimSpace(line)
 	line = strings.TrimLeft(line, "#")
 	line = strings.TrimSpace(line)

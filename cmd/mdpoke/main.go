@@ -14,7 +14,7 @@ import (
 )
 
 const usage = `Usage:
-  mdpoke <markdown-file>
+  mdpoke [--no-watch] [--max-size bytes] [--follow-symlinks] <markdown-file>
 
 mdpoke is a terminal Markdown viewer.
 `
@@ -29,6 +29,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.Usage = func() {
 		fmt.Fprint(flags.Output(), usage)
 	}
+	noWatch := flags.Bool("no-watch", false, "disable automatic reload")
+	maxSize := flags.Int64("max-size", md.DefaultMaxMarkdownSize, "maximum markdown file size in bytes")
+	followSymlinks := flags.Bool("follow-symlinks", false, "allow opening symlinked markdown files")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -43,10 +46,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	if *maxSize <= 0 {
+		fmt.Fprintln(stderr, "mdpoke: --max-size must be greater than zero")
+		return 2
+	}
 
-	doc, err := md.Load(flags.Arg(0), app.DefaultRenderWidth)
+	loadOptions := md.LoadOptions{
+		Width:          app.DefaultRenderWidth,
+		MaxSize:        *maxSize,
+		FollowSymlinks: *followSymlinks,
+	}
+	doc, err := md.LoadWithOptions(flags.Arg(0), loadOptions)
 	if err != nil {
-		fmt.Fprintf(stderr, "mdpoke: %v\n", err)
+		fmt.Fprintf(stderr, "mdpoke: %s\n", md.SanitizeMarkdownInput(err.Error()))
 		if errors.Is(err, md.ErrInvalidInput) {
 			return 2
 		}
@@ -54,12 +66,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	program := tea.NewProgram(
-		app.New(doc),
+		app.NewWithOptions(doc, app.Options{
+			NoWatch:     *noWatch,
+			LoadOptions: loadOptions,
+		}),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
 	if _, err := program.Run(); err != nil {
-		fmt.Fprintf(stderr, "mdpoke: %v\n", err)
+		fmt.Fprintf(stderr, "mdpoke: %s\n", md.SanitizeMarkdownInput(err.Error()))
 		return 1
 	}
 

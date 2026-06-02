@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,14 @@ import (
 )
 
 var ErrInvalidInput = errors.New("invalid input")
+
+const DefaultMaxMarkdownSize int64 = 20 * 1024 * 1024
+
+type LoadOptions struct {
+	Width          int
+	MaxSize        int64
+	FollowSymlinks bool
+}
 
 type Document struct {
 	Path     string
@@ -46,36 +55,92 @@ type Link struct {
 }
 
 func Load(path string, width int) (Document, error) {
+	return LoadWithOptions(path, LoadOptions{Width: width})
+}
+
+func LoadWithOptions(path string, options LoadOptions) (Document, error) {
 	if strings.TrimSpace(path) == "" {
 		return Document{}, fmt.Errorf("%w: empty file path", ErrInvalidInput)
 	}
+	if options.MaxSize <= 0 {
+		options.MaxSize = DefaultMaxMarkdownSize
+	}
 
-	info, err := os.Stat(path)
+	info, err := safeFileInfo(path, options.FollowSymlinks)
 	if err != nil {
 		return Document{}, err
 	}
 	if info.IsDir() {
 		return Document{}, fmt.Errorf("%w: %s is a directory", ErrInvalidInput, path)
 	}
+	if info.Size() > options.MaxSize {
+		return Document{}, fmt.Errorf("%w: %s is too large (%d bytes, max %d bytes)", ErrInvalidInput, path, info.Size(), options.MaxSize)
+	}
 
-	data, err := os.ReadFile(path)
+	data, err := readFileWithinLimit(path, info, options.MaxSize)
 	if err != nil {
 		return Document{}, err
 	}
 
-	rendered, err := Render(string(data), width)
+	raw := SanitizeMarkdownInput(string(data))
+	rendered, err := Render(raw, options.Width)
 	if err != nil {
 		return Document{}, err
 	}
 
-	outline, links := ParseStructure(data)
+	outline, links := ParseStructure([]byte(raw))
 	return Document{
 		Path:     filepath.Clean(path),
-		Raw:      string(data),
+		Raw:      raw,
 		Rendered: rendered,
 		Outline:  outline,
 		Links:    links,
 	}, nil
+}
+
+func safeFileInfo(path string, followSymlinks bool) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return info, nil
+	}
+	if !followSymlinks {
+		return nil, fmt.Errorf("%w: %s is a symlink; pass --follow-symlinks to open it", ErrInvalidInput, path)
+	}
+	return os.Stat(path)
+}
+
+func readFileWithinLimit(path string, expected os.FileInfo, maxSize int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if expected != nil && !os.SameFile(expected, opened) {
+		return nil, fmt.Errorf("%w: %s changed while opening", ErrInvalidInput, path)
+	}
+	if opened.IsDir() {
+		return nil, fmt.Errorf("%w: %s is a directory", ErrInvalidInput, path)
+	}
+	if opened.Size() > maxSize {
+		return nil, fmt.Errorf("%w: %s is too large (%d bytes, max %d bytes)", ErrInvalidInput, path, opened.Size(), maxSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("%w: %s is too large (more than %d bytes)", ErrInvalidInput, path, maxSize)
+	}
+	return data, nil
 }
 
 func (d Document) Render(width int) (Document, error) {
@@ -92,6 +157,7 @@ func Render(markdown string, width int) (string, error) {
 		width = 20
 	}
 
+	markdown = SanitizeMarkdownInput(markdown)
 	prepared, blocks := prepareCustomBlocks(markdown, width)
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes([]byte(mdpokeStyleJSON())),
@@ -110,6 +176,32 @@ func Render(markdown string, width int) (string, error) {
 	rendered = replaceCustomBlocks(rendered, blocks)
 	rendered = hardWrapRendered(rendered, width)
 	return strings.TrimRight(rendered, "\n") + "\n", nil
+}
+
+func SanitizeMarkdownInput(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		i += size
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r < 0x20:
+			continue
+		case r == 0x7f:
+			continue
+		case r >= 0x80 && r <= 0x9f:
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func hardWrapRendered(rendered string, width int) string {
@@ -359,6 +451,7 @@ func mdpokeStyleJSON() string {
 }
 
 func ParseStructure(source []byte) ([]Heading, []Link) {
+	source = []byte(SanitizeMarkdownInput(string(source)))
 	parser := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
