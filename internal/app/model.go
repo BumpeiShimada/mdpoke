@@ -1537,7 +1537,7 @@ func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bo
 		return md.Link{}, false
 	}
 	if renderedLine < 0 || renderedLine >= len(m.renderedLines) {
-		return candidates[0], true
+		return md.Link{}, false
 	}
 
 	plain := md.StripANSI(m.renderedLines[renderedLine])
@@ -1550,9 +1550,6 @@ func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bo
 		if x >= start && x < end {
 			return link, true
 		}
-	}
-	if len(candidates) == 1 {
-		return candidates[0], true
 	}
 	return md.Link{}, false
 }
