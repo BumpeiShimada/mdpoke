@@ -211,6 +211,34 @@ func TestEnterTogglesFocusedCheckbox(t *testing.T) {
 	}
 }
 
+func TestToggleFocusedCheckboxScrollsToIt(t *testing.T) {
+	raw := strings.Repeat("plain line\n", 24) + "- [ ] Pending\n"
+	model := New(md.Document{
+		Rendered: raw,
+		Raw:      raw,
+	})
+	model.body.Width = 60
+	model.body.Height = 10
+	model.rebuildContent()
+	model.selectedTask = 0
+	oldTaskFocusStyle := taskFocusStyle
+	taskFocusStyle = lipgloss.NewStyle().Transform(func(s string) string { return "{" + s + "}" })
+	defer func() {
+		taskFocusStyle = oldTaskFocusStyle
+	}()
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeySpace}))
+	got := next.(Model)
+	taskLine := got.lineForTask(got.tasks[0])
+
+	if got.body.YOffset != taskLine-got.body.Height/2 {
+		t.Fatalf("YOffset = %d, want focused task centered at %d", got.body.YOffset, taskLine-got.body.Height/2)
+	}
+	if !strings.Contains(got.body.View(), "{[x]}") {
+		t.Fatalf("expected toggled checkbox to be highlighted:\n%s", got.body.View())
+	}
+}
+
 func TestClickCheckboxTogglesIt(t *testing.T) {
 	model, path := taskFixtureModel(t, "- [ ] Pending\n")
 	model.body.Width = 60
