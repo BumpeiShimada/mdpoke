@@ -24,6 +24,42 @@ func TestRunUsageMentionsSafetyFlags(t *testing.T) {
 	}
 }
 
+func TestRunHelpExitsSuccessfully(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "-help"} {
+		t.Run(arg, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := run([]string{arg}, &stdout, &stderr)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0", code)
+			}
+			if !strings.Contains(stdout.String(), "Usage:") {
+				t.Fatalf("stdout = %q, want usage", stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"--version"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.HasPrefix(stdout.String(), "mdpoke ") {
+		t.Fatalf("stdout = %q, want version", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunRejectsNonPositiveMaxSize(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

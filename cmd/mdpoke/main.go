@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,21 +15,29 @@ import (
 )
 
 const usage = `Usage:
-  mdpoke [--no-watch] [--max-size bytes] [--follow-symlinks] <markdown-file>
+  mdpoke [--version] [--no-watch] [--max-size bytes] [--follow-symlinks] <markdown-file>
 
 mdpoke is a terminal Markdown viewer.
 `
+
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if hasHelpArg(args) {
+		fmt.Fprint(stdout, usage)
+		return 0
+	}
+
 	flags := flag.NewFlagSet("mdpoke", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
 		fmt.Fprint(flags.Output(), usage)
 	}
+	showVersion := flags.Bool("version", false, "print version")
 	noWatch := flags.Bool("no-watch", false, "disable automatic reload")
 	maxSize := flags.Int64("max-size", md.DefaultMaxMarkdownSize, "maximum markdown file size in bytes")
 	followSymlinks := flags.Bool("follow-symlinks", false, "allow opening symlinked markdown files")
@@ -37,6 +46,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if *showVersion {
+		fmt.Fprintf(stdout, "mdpoke %s\n", versionString())
+		return 0
+	}
 	if flags.NArg() == 0 {
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -79,4 +92,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" || arg == "-help" {
+			return true
+		}
+	}
+	return false
+}
+
+func versionString() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }

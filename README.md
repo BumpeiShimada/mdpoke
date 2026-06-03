@@ -6,6 +6,8 @@ It focuses on reading one Markdown file at a time, with a main rendered document
 
 It is meant for the kind of Markdown that engineers actually live in: design notes, release checklists, long issue write-ups, runbooks, and scratch files that keep changing while another editor or command rewrites them.
 
+![mdpoke showing a rendered Markdown file with the outline pane open](docs/demo.gif)
+
 ## Highlights
 
 - Read rendered Markdown without leaving the terminal, while preserving source line breaks so prose, checklists, and pasted notes keep their shape.
