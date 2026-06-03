@@ -10,6 +10,8 @@ It focuses on reading one Markdown file at a time, with an heading outline, sear
 brew install BumpeiShimada/tap/mdpoke
 ```
 
+NB! not sure if the binary for Windows works yet.
+
 ## Highlights
 
 ### Read Markdown with an optional heading outline.
