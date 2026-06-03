@@ -2302,10 +2302,25 @@ func normalizeMarkdownLine(line string) string {
 	line = markdownLinkRE.ReplaceAllString(line, "$1")
 	line = strings.Trim(line, "<>")
 	line = strings.Trim(line, "`*_~")
-	if len(line) > 48 {
-		line = line[:48]
-	}
+	line = truncateUTF8Bytes(line, 48)
 	return strings.TrimSpace(line)
+}
+
+func truncateUTF8Bytes(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	last := 0
+	for i := range s {
+		if i > limit {
+			break
+		}
+		last = i
+	}
+	if last == 0 {
+		return ""
+	}
+	return s[:last]
 }
 
 func styleLineRange(line string, start, end int, style lipgloss.Style) string {

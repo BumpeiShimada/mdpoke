@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -730,6 +731,23 @@ func TestNormalizeMarkdownLine(t *testing.T) {
 		if got := normalizeMarkdownLine(input); got != want {
 			t.Fatalf("normalizeMarkdownLine(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestNormalizeMarkdownLineTruncatesWideTextSafely(t *testing.T) {
+	got := normalizeMarkdownLine("## " + strings.Repeat("椿佐", 40) + strings.Repeat(" ", 120))
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("normalized line is not valid UTF-8: %q", got)
+	}
+	if len(got) > 48 {
+		t.Fatalf("normalized byte length = %d, want <= 48 for %q", len(got), got)
+	}
+	if lipgloss.Width(got) > 48 {
+		t.Fatalf("normalized width = %d, want <= 48 for %q", lipgloss.Width(got), got)
+	}
+	if !strings.HasPrefix(got, "椿佐椿佐") {
+		t.Fatalf("normalized line = %q, want original heading prefix", got)
 	}
 }
 
@@ -2126,6 +2144,57 @@ func TestFixtureTableSamplesHeadingDoesNotMapToLinksList(t *testing.T) {
 	}
 	if !strings.Contains(md.StripANSI(model.renderedLines[targetRenderedLine]), "Table Samples") {
 		t.Fatalf("target rendered line does not contain heading: %q", md.StripANSI(model.renderedLines[targetRenderedLine]))
+	}
+}
+
+func TestLongWideHeadingsWithTrailingSpacesMapToRenderedHeadingLines(t *testing.T) {
+	firstHeading := "椿佐の佐和恒柊"
+	secondHeading := "4-0紫: C椿 / Cbjtqj はテーレチァヒイる PgcrXz 凪朗拍畔"
+	raw := strings.Join([]string{
+		"## " + firstHeading + strings.Repeat(" ", 180),
+		"",
+		strings.Repeat("NI52 0Iま朔南滋畔ぉ紘咲ほくんむく、ゅはょE和 / Loopyjd Mmplidiaoyw Oypcjrindd / Vcwjvx る拓岳、", 4),
+		"",
+		strings.Repeat("るみ蒼う、暢暁ろPhkrfwし佳ゃ巴恒若緒和畔ぃ宙紘む謹倭、乃謙ゃKrhcTeな呈伊セ伍若ふむ和佳ひ紺うふ、", 4),
+		"",
+		strings.Repeat("きぁ、HpfzHyま淡祐よつしぉSP雫紫玄誠ぃいにたひ、南宰おィノアェフ渓笹わ薫もラヒリノャセネゃ、", 4),
+		"",
+		"## " + secondHeading + strings.Repeat(" ", 180),
+		"",
+		strings.Repeat("謙迅紘拍の暢佐き、Gepuelぅ萌ぅ庭樹伍朗ゥ", 10),
+	}, "\n") + "\n"
+
+	rendered, err := md.Render(raw, 76)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{
+		Path:     "wide-headings.md",
+		Raw:      raw,
+		Rendered: rendered,
+		Outline:  outline,
+		Links:    links,
+	})
+
+	if len(outline) != 2 {
+		t.Fatalf("outline length = %d, want 2", len(outline))
+	}
+	for i, heading := range outline {
+		renderedLine := model.lineForRaw(heading.Line)
+		if renderedLine < 0 || renderedLine >= len(model.renderedLines) {
+			t.Fatalf("heading %d rendered line = %d, outside rendered lines", i, renderedLine)
+		}
+		line := md.StripANSI(model.renderedLines[renderedLine])
+		key := normalizeMarkdownLine("## " + heading.Text)
+		if !strings.Contains(line, key) {
+			t.Fatalf("heading %d mapped to %q, want line containing %q", i, line, key)
+		}
+	}
+
+	model.body.SetYOffset(model.lineForRaw(outline[1].Line))
+	if got := model.currentHeadingIndex(); got != 1 {
+		t.Fatalf("currentHeadingIndex = %d, want second heading", got)
 	}
 }
 
