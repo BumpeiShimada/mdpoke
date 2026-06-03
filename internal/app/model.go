@@ -134,6 +134,8 @@ type Model struct {
 	textSelectionEnd      selectionPoint
 	textSelectionAnchor   selectionPoint
 	textSelectionDragging bool
+	clearSelectionOnInput bool
+	ignoreModalRelease    bool
 }
 
 func New(doc md.Document) Model {
@@ -230,6 +232,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateModalMouse(msg)
 			return m, nil
 		}
+		if m.ignoreModalRelease && isMouseRelease(msg) {
+			m.ignoreModalRelease = false
+			return m, nil
+		}
+		if msg.Action == tea.MouseActionPress {
+			m.clearDeferredLineSelection()
+		}
 		if m.textSelectionAnchor.valid() {
 			if m.updateLineSelectionMouse(msg) {
 				return m, nil
@@ -267,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.clearDeferredLineSelection()
 	m.clearJumpFocus()
 	m.clearOutlineFocus()
 
@@ -302,7 +312,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.followSelection()
 		return m, nil
 	case "y":
-		m.copySelection()
+		m.copySelectedLink()
 		return m, nil
 	case " ":
 		m.toggleSelectedTask()
@@ -396,6 +406,10 @@ func (m *Model) updateModalMouse(msg tea.MouseMsg) {
 	}
 	if !m.mouseInModal(msg) {
 		m.dismissModal()
+		if m.clearSelectionOnInput && m.hasLineSelection() {
+			m.ignoreModalRelease = true
+			return
+		}
 		if m.clearLineSelection() {
 			m.refreshContent()
 		}
@@ -824,7 +838,7 @@ func (m Model) positionLabel() string {
 func (m Model) guideItems() []string {
 	items := []string{"o outline", "/ search", "? help", "q quit"}
 	if m.hasLineSelection() {
-		return []string{"y copy text", "esc clear", "? help"}
+		return []string{"esc clear", "? help"}
 	}
 	if len(m.tasks) > 0 {
 		items = append([]string{"tab checkbox"}, items...)
@@ -1539,8 +1553,7 @@ func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) bool {
 		if dragging && ok {
 			m.textSelectionStart = m.textSelectionAnchor
 			m.textSelectionEnd = point
-			m.status = m.lineSelectionStatus()
-			m.refreshContent()
+			m.copyLineSelection()
 		}
 		m.textSelectionAnchor = invalidSelectionPoint()
 		m.textSelectionDragging = false
@@ -1639,7 +1652,18 @@ func (m *Model) clearLineSelection() bool {
 	m.textSelectionEnd = invalidSelectionPoint()
 	m.textSelectionAnchor = invalidSelectionPoint()
 	m.textSelectionDragging = false
+	m.clearSelectionOnInput = false
+	m.ignoreModalRelease = false
 	return hadSelection
+}
+
+func (m *Model) clearDeferredLineSelection() {
+	if !m.clearSelectionOnInput {
+		return
+	}
+	if m.clearLineSelection() {
+		m.refreshContent()
+	}
 }
 
 func (m *Model) followSelection() {
@@ -2055,17 +2079,21 @@ func (m *Model) clearTransientHighlights() {
 	m.resize()
 }
 
-func (m *Model) copySelection() {
+func (m *Model) copyLineSelection() {
 	text, count, ok := m.selectedLineText()
-	if ok {
-		if err := clipboardWrite(text); err != nil {
-			m.status = fmt.Sprintf("copy failed: %s", md.SanitizeMarkdownInput(err.Error()))
-			return
-		}
-		m.showCopiedMessage(fmt.Sprintf("copied %d %s", count, plural(count, "line")))
+	if !ok {
+		m.status = ""
+		m.refreshContent()
 		return
 	}
-	m.copySelectedLink()
+	if err := clipboardWrite(text); err != nil {
+		m.status = fmt.Sprintf("copy failed: %s", md.SanitizeMarkdownInput(err.Error()))
+		m.refreshContent()
+		return
+	}
+	m.clearSelectionOnInput = true
+	m.showCopiedMessage(fmt.Sprintf("copied %d %s", count, plural(count, "line")))
+	m.refreshContent()
 }
 
 func (m *Model) copySelectedLink() {

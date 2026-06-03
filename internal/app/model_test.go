@@ -1556,7 +1556,7 @@ func TestClickFixtureAutolinkCopiesURL(t *testing.T) {
 	}
 }
 
-func TestDragSelectTextAndYCopiesRenderedText(t *testing.T) {
+func TestDragSelectTextCopiesRenderedTextOnRelease(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
 	clipboardWrite = func(text string) error {
@@ -1592,21 +1592,17 @@ func TestDragSelectTextAndYCopiesRenderedText(t *testing.T) {
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
 	}))
-	selected := next.(Model)
-
-	if !selected.hasLineSelection() {
-		t.Fatal("expected drag to leave selected text")
-	}
-	items := strings.Join(selected.guideItems(), " ")
-	if !strings.Contains(items, "y copy text") {
-		t.Fatalf("guide items = %q, want copy text hint", items)
-	}
-
-	next, _ = selected.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'y'}}))
 	got := next.(Model)
 
 	if copied != "lpha\nbeta\ng" {
 		t.Fatalf("copied = %q, want selected rendered text", copied)
+	}
+	if !got.hasLineSelection() {
+		t.Fatal("expected drag to leave selected text")
+	}
+	items := strings.Join(got.guideItems(), " ")
+	if strings.Contains(items, "y copy text") {
+		t.Fatalf("guide items = %q, should not include copy text hint", items)
 	}
 	if !strings.Contains(got.status, "copied 3 lines") {
 		t.Fatalf("status = %q, want copied line count", got.status)
@@ -1619,6 +1615,18 @@ func TestDragSelectTextAndYCopiesRenderedText(t *testing.T) {
 	}
 	if !strings.Contains(got.modalBody, "Copied to clipboard") {
 		t.Fatalf("modalBody = %q, want generic copied message", got.modalBody)
+	}
+
+	next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	dismissed := next.(Model)
+	if !dismissed.hasLineSelection() {
+		t.Fatal("expected copied selection to remain after closing modal")
+	}
+
+	next, _ = dismissed.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'j'}}))
+	cleared := next.(Model)
+	if cleared.hasLineSelection() {
+		t.Fatal("expected next normal key press to clear copied selection")
 	}
 }
 
@@ -1658,7 +1666,6 @@ func TestDragSelectTextSkipsVisualLeftMargin(t *testing.T) {
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
 	}))
-	next, _ = next.(Model).Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'y'}}))
 
 	if copied != "alpha\nbeta" {
 		t.Fatalf("copied = %q, want text without visual margin", copied)
@@ -1701,7 +1708,6 @@ func TestDragSelectTextTrimsCopiedSelectionEdges(t *testing.T) {
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
 	}))
-	next, _ = next.(Model).Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'y'}}))
 	got := next.(Model)
 
 	if copied != "alpha  \nbeta" {
@@ -1736,7 +1742,7 @@ func TestDragSelectTextHighlightsTextThroughInnerANSI(t *testing.T) {
 	}
 }
 
-func TestDragSelectLinesCopiesBeforeFocusedLink(t *testing.T) {
+func TestYCopiesFocusedLinkInsteadOfSelectedLine(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
 	clipboardWrite = func(text string) error {
@@ -1761,14 +1767,92 @@ func TestDragSelectLinesCopiesBeforeFocusedLink(t *testing.T) {
 	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'y'}}))
 	got := next.(Model)
 
-	if copied != "plain" {
-		t.Fatalf("copied = %q, want selected line before focused link", copied)
+	if copied != "https://example.com" {
+		t.Fatalf("copied = %q, want focused link URL", copied)
 	}
-	if !strings.Contains(got.status, "copied 1 line") {
-		t.Fatalf("status = %q, want selected line copy status", got.status)
+	if !strings.Contains(got.status, "copied: https://example.com") {
+		t.Fatalf("status = %q, want link copy status", got.status)
 	}
 	if got.modalKind != modalMessage {
 		t.Fatalf("modalKind = %d, want copied message", got.modalKind)
+	}
+}
+
+func TestCopiedDragSelectionSurvivesOutsideClickDismiss(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Rendered: "alpha\nbeta\n",
+		Raw:      "alpha\nbeta\n",
+	})
+	model.width = 80
+	model.height = 20
+	model.body.Width = 40
+	model.body.Height = 10
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      4,
+		Y:      1,
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      4,
+		Y:      1,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	copiedModel := next.(Model)
+	if copied != "alpha\nbeta" {
+		t.Fatalf("copied = %q, want selected text", copied)
+	}
+	if copiedModel.modalKind != modalMessage {
+		t.Fatalf("modalKind = %d, want copied message", copiedModel.modalKind)
+	}
+
+	next, _ = copiedModel.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	dismissed := next.(Model)
+	if dismissed.modalKind != modalNone {
+		t.Fatalf("modalKind = %d, want dismissed", dismissed.modalKind)
+	}
+	if !dismissed.hasLineSelection() {
+		t.Fatal("expected selection to remain after dismissing copied modal")
+	}
+
+	next, _ = dismissed.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	afterRelease := next.(Model)
+	if !afterRelease.hasLineSelection() {
+		t.Fatal("expected release from dismiss click to be ignored")
+	}
+
+	next, _ = afterRelease.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'j'}}))
+	cleared := next.(Model)
+	if cleared.hasLineSelection() {
+		t.Fatal("expected next key press to clear copied selection")
 	}
 }
 
