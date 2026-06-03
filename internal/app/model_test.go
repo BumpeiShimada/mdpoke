@@ -140,7 +140,7 @@ func TestRenderContentHighlightsWrappedBareAutolinkSegments(t *testing.T) {
 		bareAutoLinkStyle = oldBareAutoLinkStyle
 	}()
 	model := New(md.Document{
-		Rendered: "こちらがURL: https://example.com/path/to/\n  ↪ 日本語リソース名\n",
+		Rendered: "こちらがURL: https://example.com/path/to/\n日本語リソース名\n",
 		Raw:      "こちらがURL: " + url + "\n",
 		Links: []md.Link{
 			{Text: url, URL: url, Line: 1},
@@ -1517,11 +1517,11 @@ func TestClickWrappedBareURLContinuationCopiesFullURL(t *testing.T) {
 		Links: []md.Link{
 			{Text: url, URL: url, Line: 1},
 		},
-		Rendered: "こちらがURL: https://example.com/path/to/\n  ↪ 日本語リソース名\n",
+		Rendered: "こちらがURL: https://example.com/path/to/\n日本語リソース名\n",
 		Raw:      "こちらがURL: " + url + "\n",
 	})
 
-	link, ok := model.linkAtRenderedPosition(1, lipgloss.Width("  ↪ 日本"), 1)
+	link, ok := model.linkAtRenderedPosition(1, lipgloss.Width("日本"), 1)
 	if !ok {
 		t.Fatal("expected wrapped URL continuation to be clickable")
 	}
@@ -1645,6 +1645,52 @@ func TestDragSelectTextCopiesRenderedTextOnRelease(t *testing.T) {
 	cleared := next.(Model)
 	if cleared.hasLineSelection() {
 		t.Fatal("expected next normal key press to clear copied selection")
+	}
+}
+
+func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Rendered: "abcdefghijklmnop\nqrstuvwxyz\n",
+		Raw:      "abcdefghijklmnopqrstuvwxyz\n",
+	})
+	model.body.Width = 40
+	model.body.Height = 10
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      10,
+		Y:      1,
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      10,
+		Y:      1,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	if copied != "abcdefghijklmnopqrstuvwxyz" {
+		t.Fatalf("copied = %q, want visual wrap joined without newline", copied)
+	}
+	if !strings.Contains(got.status, "copied 1 line") {
+		t.Fatalf("status = %q, want copied line count based on copied text", got.status)
 	}
 }
 

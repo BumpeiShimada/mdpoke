@@ -1643,12 +1643,19 @@ func (m Model) selectedLineText() (string, int, bool) {
 	if !ok {
 		return "", 0, false
 	}
-	lines := make([]string, 0, end.Line-start.Line+1)
+	var b strings.Builder
+	lastRaw := -1
 	for line := start.Line; line <= end.Line; line++ {
 		startColumn, endColumn, _ := m.textSelectionColumnsForLine(line, start, end)
-		lines = append(lines, displayColumnSlice(m.contentLines[line], startColumn, endColumn))
+		segment := displayColumnSlice(m.contentLines[line], startColumn, endColumn)
+		raw := m.rawLineForRendered(line)
+		if line > start.Line && raw != lastRaw {
+			b.WriteRune('\n')
+		}
+		b.WriteString(segment)
+		lastRaw = raw
 	}
-	text := strings.TrimSpace(strings.Join(lines, "\n"))
+	text := strings.TrimSpace(b.String())
 	if text == "" {
 		return "", 0, false
 	}
@@ -1721,16 +1728,28 @@ func (m Model) styleBareAutoLinksForRawIndexes(lines []string, raw int, indexes 
 	if start < 0 || start >= len(lines) {
 		return
 	}
-	for line := start; line < len(lines) && m.rawLineForRendered(line) == raw; line++ {
-		for _, linkIndex := range indexes {
-			if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
+	for _, linkIndex := range indexes {
+		if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
+			continue
+		}
+		link := m.doc.Links[linkIndex]
+		if link.Text != link.URL || !hasScheme(link.URL) {
+			continue
+		}
+		target := strings.TrimSpace(link.URL)
+		targetOffset := 0
+		for line := start; line < len(lines) && m.rawLineForRendered(line) == raw; line++ {
+			segment, segmentStart, _, nextOffset, ok := orderedBareLinkSegmentInLine(md.StripANSI(lines[line]), target, targetOffset)
+			if !ok {
 				continue
 			}
-			link := m.doc.Links[linkIndex]
-			if link.Text != link.URL || !hasScheme(link.URL) {
-				continue
+			startColumn := lipgloss.Width(md.StripANSI(lines[line])[:segmentStart])
+			endColumn := startColumn + lipgloss.Width(segment)
+			lines[line] = styleANSIVisibleRangePlain(lines[line], startColumn, endColumn, bareAutoLinkStyle)
+			targetOffset = nextOffset
+			if targetOffset >= len(target) {
+				break
 			}
-			lines[line] = styleBareAutoLink(lines[line], strings.TrimSpace(link.URL))
 		}
 	}
 }
@@ -1888,7 +1907,7 @@ func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bo
 	var selected md.Link
 	selectedWidth := -1
 	for _, link := range candidates {
-		_, start, end, ok := clickedLinkTarget(plain, link, x)
+		_, start, end, ok := m.clickedLinkTargetAtRenderedLine(plain, link, renderedLine, x)
 		if !ok {
 			continue
 		}
@@ -1899,6 +1918,50 @@ func (m Model) linkAtRenderedPosition(renderedLine, x, rawLine int) (md.Link, bo
 		}
 	}
 	return selected, selectedWidth >= 0
+}
+
+func (m Model) clickedLinkTargetAtRenderedLine(plain string, link md.Link, renderedLine, x int) (string, int, int, bool) {
+	if segment, start, end, ok := clickedLinkTarget(plain, link, x); ok {
+		return segment, start, end, true
+	}
+	if link.Text != link.URL || !hasScheme(link.URL) {
+		return "", -1, -1, false
+	}
+	segment, start, end, ok := m.bareLinkSegmentAtRenderedLine(link, renderedLine)
+	if !ok || x < start || x >= end {
+		return "", -1, -1, false
+	}
+	return segment, start, end, true
+}
+
+func (m Model) bareLinkSegmentAtRenderedLine(link md.Link, renderedLine int) (string, int, int, bool) {
+	target := strings.TrimSpace(link.URL)
+	if target == "" || renderedLine < 0 || renderedLine >= len(m.contentLines) {
+		return "", -1, -1, false
+	}
+
+	raw := link.Line
+	start := m.lineForRaw(raw)
+	if start < 0 || start > renderedLine {
+		start = renderedLine
+	}
+
+	targetOffset := 0
+	for line := start; line < len(m.contentLines) && m.rawLineForRendered(line) == raw; line++ {
+		segment, segmentStart, _, nextOffset, ok := orderedBareLinkSegmentInLine(m.contentLines[line], target, targetOffset)
+		if !ok {
+			continue
+		}
+		if line == renderedLine {
+			startColumn := lipgloss.Width(m.contentLines[line][:segmentStart])
+			return segment, startColumn, startColumn + lipgloss.Width(segment), true
+		}
+		targetOffset = nextOffset
+		if targetOffset >= len(target) {
+			break
+		}
+	}
+	return "", -1, -1, false
 }
 
 func lineContainsFocusedLinkTarget(lines []string, index int, link md.Link) bool {
@@ -1996,6 +2059,44 @@ func bestLinkSegmentInLine(line, target string) (string, int, int, bool) {
 		return "", 0, 0, false
 	}
 	return line[bestStart:bestEnd], bestStart, bestEnd, true
+}
+
+func orderedBareLinkSegmentInLine(line, target string, targetOffset int) (string, int, int, int, bool) {
+	if targetOffset < 0 || targetOffset >= len(target) {
+		return "", 0, 0, targetOffset, false
+	}
+
+	remaining := target[targetOffset:]
+	bounds := runeBoundaries(line)
+	bestStart, bestEnd, bestWidth := 0, 0, 0
+	minWidth := min(6, lipgloss.Width(remaining))
+	for i := 0; i < len(bounds)-1; i++ {
+		for j := len(bounds) - 1; j > i; j-- {
+			segment := strings.Trim(line[bounds[i]:bounds[j]], " ↪<>")
+			if segment == "" || !strings.HasPrefix(remaining, segment) {
+				continue
+			}
+			if targetOffset == 0 && !hasScheme(segment) {
+				continue
+			}
+			width := lipgloss.Width(segment)
+			if width < minWidth {
+				continue
+			}
+			if width > bestWidth {
+				trimmedStart := bounds[i] + strings.Index(line[bounds[i]:bounds[j]], segment)
+				bestStart = trimmedStart
+				bestEnd = trimmedStart + len(segment)
+				bestWidth = width
+			}
+			break
+		}
+	}
+	if bestWidth <= 0 {
+		return "", 0, 0, targetOffset, false
+	}
+	segment := line[bestStart:bestEnd]
+	return segment, bestStart, bestEnd, targetOffset + len(segment), true
 }
 
 func runeBoundaries(s string) []int {
