@@ -115,6 +115,7 @@ type Model struct {
 	loadOptions md.LoadOptions
 
 	renderedLines  []string
+	baseLines      []string
 	contentLines   []string
 	rawToRendered  []int
 	renderedToRaw  []int
@@ -585,6 +586,7 @@ func (m *Model) rebuildContent() {
 		m.selectedTask = -1
 	}
 	m.rebuildLineIndexes()
+	m.rebuildBaseLines()
 	m.refreshContent()
 	m.refreshOutline()
 }
@@ -595,6 +597,27 @@ func (m *Model) refreshContent() {
 
 func (m *Model) refreshOutline() {
 	m.outline.SetContent(m.renderOutline())
+}
+
+func (m *Model) rebuildBaseLines() {
+	m.baseLines = make([]string, len(m.renderedLines))
+	copy(m.baseLines, m.renderedLines)
+	m.styleBareAutoLinks(m.baseLines)
+}
+
+func (m *Model) rebuildBaseLinesForRaw(raw int) {
+	if len(m.baseLines) != len(m.renderedLines) {
+		m.rebuildBaseLines()
+		return
+	}
+	start := m.lineForRaw(raw)
+	if start < 0 || start >= len(m.baseLines) {
+		return
+	}
+	for line := start; line < len(m.baseLines) && m.rawLineForRendered(line) == raw; line++ {
+		m.baseLines[line] = m.renderedLines[line]
+	}
+	m.styleBareAutoLinksForRaw(m.baseLines, raw)
 }
 
 func (m *Model) rebuildLineIndexes() {
@@ -627,28 +650,24 @@ func (m *Model) rebuildLineIndexes() {
 }
 
 func (m Model) renderContent() string {
-	lines := make([]string, len(m.renderedLines))
-	copy(lines, m.renderedLines)
-
-	m.styleBareAutoLinks(lines)
-
-	matchesByLine := make(map[int][]int)
-	for i, match := range m.searchMatches {
-		matchesByLine[match.Line] = append(matchesByLine[match.Line], i)
+	base := m.baseLines
+	if len(base) != len(m.renderedLines) {
+		base = m.renderedLines
 	}
-	for lineIndex, indexes := range matchesByLine {
+	lines := make([]string, len(base))
+	copy(lines, base)
+
+	for matchIndex := len(m.searchMatches) - 1; matchIndex >= 0; matchIndex-- {
+		match := m.searchMatches[matchIndex]
+		lineIndex := match.Line
 		if lineIndex < 0 || lineIndex >= len(lines) {
 			continue
 		}
-		for i := len(indexes) - 1; i >= 0; i-- {
-			matchIndex := indexes[i]
-			match := m.searchMatches[matchIndex]
-			style := searchMatchStyle
-			if matchIndex == m.selectedMatch {
-				style = activeSearchMatchStyle
-			}
-			lines[lineIndex] = styleANSIVisibleRange(lines[lineIndex], match.Start, match.End, style)
+		style := searchMatchStyle
+		if matchIndex == m.selectedMatch {
+			style = activeSearchMatchStyle
 		}
+		lines[lineIndex] = styleANSIVisibleRange(lines[lineIndex], match.Start, match.End, style)
 	}
 
 	if m.selectedLink >= 0 && m.selectedLink < len(m.doc.Links) {
@@ -1239,13 +1258,13 @@ func (m *Model) toggleTask(index int) {
 		}
 	}
 
-	if m.applyFastTaskToggle(index, nextRaw, nextLine) {
+	if m.applyFastTaskToggle(index, nextRaw, nextLine, task.Line) {
 		return
 	}
 	m.renderToggledDocument(nextRaw, task.Line)
 }
 
-func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string) bool {
+func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string, rawLine int) bool {
 	checked, ok := taskLineChecked(nextLine)
 	if !ok {
 		return false
@@ -1270,6 +1289,7 @@ func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string) bool {
 	m.stamp = currentFileStamp(m.doc.Path)
 	m.tasks = parseTaskItems(m.doc.Raw)
 	m.rebuildLineIndexes()
+	m.rebuildBaseLinesForRaw(rawLine)
 	m.focusToggledTask(index)
 	return true
 }
@@ -1687,9 +1707,22 @@ func (m Model) styleFocusedLink(line string, link md.Link) string {
 }
 
 func (m Model) styleBareAutoLinks(lines []string) {
-	for line := range lines {
-		raw := m.rawLineForRendered(line)
-		for _, linkIndex := range m.bareLinksByRaw[raw] {
+	for raw, indexes := range m.bareLinksByRaw {
+		m.styleBareAutoLinksForRawIndexes(lines, raw, indexes)
+	}
+}
+
+func (m Model) styleBareAutoLinksForRaw(lines []string, raw int) {
+	m.styleBareAutoLinksForRawIndexes(lines, raw, m.bareLinksByRaw[raw])
+}
+
+func (m Model) styleBareAutoLinksForRawIndexes(lines []string, raw int, indexes []int) {
+	start := m.lineForRaw(raw)
+	if start < 0 || start >= len(lines) {
+		return
+	}
+	for line := start; line < len(lines) && m.rawLineForRendered(line) == raw; line++ {
+		for _, linkIndex := range indexes {
 			if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
 				continue
 			}
@@ -2179,13 +2212,17 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 	rawToRendered := make([]int, len(rawLines)+1)
 	renderedToRaw := make([]int, max(1, len(rendered)))
 	rawHasRenderedContent := make([]bool, len(rawLines)+1)
+	lowerRendered := make([]string, len(rendered))
+	for i, line := range rendered {
+		lowerRendered[i] = strings.ToLower(line)
+	}
 
 	cursor := 0
 	for i, rawLine := range rawLines {
 		rawNumber := i + 1
 		key := normalizeMarkdownLine(rawLine)
 		if key != "" && len(rendered) > 0 {
-			cursor = findRenderedLine(rendered, key, cursor)
+			cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
 			rawHasRenderedContent[rawNumber] = true
 		}
 		rawToRendered[rawNumber] = cursor
@@ -2209,25 +2246,21 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 func findRenderedLine(rendered []string, key string, cursor int) int {
 	windowEnd := min(len(rendered), cursor+16)
 	for i := cursor; i < windowEnd; i++ {
-		if normalizedContains(rendered[i], key) {
+		if strings.Contains(rendered[i], key) {
 			return i
 		}
 	}
 	for i := cursor; i < len(rendered); i++ {
-		if normalizedContains(rendered[i], key) {
+		if strings.Contains(rendered[i], key) {
 			return i
 		}
 	}
 	for i := 0; i < cursor; i++ {
-		if normalizedContains(rendered[i], key) {
+		if strings.Contains(rendered[i], key) {
 			return i
 		}
 	}
 	return clamp(cursor, 0, max(0, len(rendered)-1))
-}
-
-func normalizedContains(line, key string) bool {
-	return strings.Contains(strings.ToLower(line), strings.ToLower(key))
 }
 
 var (

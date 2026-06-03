@@ -110,6 +110,11 @@ func TestRenderContentFallsBackToFocusedLinkText(t *testing.T) {
 
 func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
 	url := "https://example.com/path/to/日本語リソース名"
+	oldBareAutoLinkStyle := bareAutoLinkStyle
+	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
+	defer func() {
+		bareAutoLinkStyle = oldBareAutoLinkStyle
+	}()
 	model := New(md.Document{
 		Rendered: "こちらがURL: \x1b[4mhttps://example.com/path/to/\x1b[0m日本語リソース名\n",
 		Raw:      "こちらがURL: " + url + "\n",
@@ -117,11 +122,6 @@ func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
 			{Text: url, URL: url, Line: 1},
 		},
 	})
-	oldBareAutoLinkStyle := bareAutoLinkStyle
-	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
-	defer func() {
-		bareAutoLinkStyle = oldBareAutoLinkStyle
-	}()
 
 	rendered := model.renderContent()
 	if !strings.Contains(rendered, "["+url+"]") {
@@ -134,6 +134,11 @@ func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
 
 func TestRenderContentHighlightsWrappedBareAutolinkSegments(t *testing.T) {
 	url := "https://example.com/path/to/日本語リソース名"
+	oldBareAutoLinkStyle := bareAutoLinkStyle
+	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
+	defer func() {
+		bareAutoLinkStyle = oldBareAutoLinkStyle
+	}()
 	model := New(md.Document{
 		Rendered: "こちらがURL: https://example.com/path/to/\n  ↪ 日本語リソース名\n",
 		Raw:      "こちらがURL: " + url + "\n",
@@ -141,11 +146,6 @@ func TestRenderContentHighlightsWrappedBareAutolinkSegments(t *testing.T) {
 			{Text: url, URL: url, Line: 1},
 		},
 	})
-	oldBareAutoLinkStyle := bareAutoLinkStyle
-	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
-	defer func() {
-		bareAutoLinkStyle = oldBareAutoLinkStyle
-	}()
 
 	rendered := model.renderContent()
 	if !strings.Contains(rendered, "[https://example.com/path/to/]") {
