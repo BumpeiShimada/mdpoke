@@ -4,6 +4,12 @@
 
 It focuses on reading one Markdown file at a time, with an heading outline, search, click/drag text copy, and task checkbox control.
 
+## Install
+
+```sh
+brew install BumpeiShimada/tap/mdpoke
+```
+
 ## Highlights
 
 ### Read Markdown with an optional heading outline.
@@ -29,12 +35,6 @@ It focuses on reading one Markdown file at a time, with an heading outline, sear
 ### Jump into internal Markdown anchors with a confirmation prompt.
 
 <img width="1032" height="692" alt="sixth" src="https://github.com/user-attachments/assets/c7f619d2-884b-49cc-b35f-db8ccf9cb952" />
-
-## Install
-
-```sh
-brew install BumpeiShimada/tap/mdpoke
-```
 
 ## Run
 
