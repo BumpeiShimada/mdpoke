@@ -1816,6 +1816,72 @@ func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
 	}
 }
 
+func TestSelectedWrappedCodeBlockDoesNotInsertSpaceInsideToken(t *testing.T) {
+	model := New(md.Document{
+		Rendered: strings.Join([]string{
+			"  ╭─ ruby ─────────────────────────────────╮",
+			"  Fixture = Struct.new(:name, :enabled, ke",
+			"  yword_init: true)",
+			"  ╰────────────────────────────────────────╯",
+			"",
+		}, "\n"),
+		Raw: strings.Join([]string{
+			"```ruby",
+			"Fixture = Struct.new(:name, :enabled, keyword_init: true)",
+			"```",
+			"",
+		}, "\n"),
+	})
+	model.textSelectionStart = selectionPoint{
+		Line:   1,
+		Column: selectionLineStartColumn(model.contentLines[1]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   2,
+		Column: lipgloss.Width(model.contentLines[2]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected code block text")
+	}
+	if strings.Contains(text, "ke yword_init") {
+		t.Fatalf("copied code block inserted wrap space: %q", text)
+	}
+	if !strings.Contains(text, "keyword_init") {
+		t.Fatalf("copied code block did not preserve wrapped token: %q", text)
+	}
+}
+
+func TestSelectedTextTrimsRendererPaddingOnEveryLine(t *testing.T) {
+	model := New(md.Document{
+		Rendered: strings.Join([]string{
+			"  Internal links:                                                          ",
+			"                                                                         ",
+			"  • Jump Target                                                            ",
+			"",
+		}, "\n"),
+		Raw: "Internal links:\n\n- [Jump Target](#jump-target)\n",
+	})
+	model.textSelectionStart = selectionPoint{
+		Line:   0,
+		Column: selectionLineStartColumn(model.contentLines[0]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   2,
+		Column: lipgloss.Width(model.contentLines[2]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected text")
+	}
+	want := "Internal links:\n\n• Jump Target"
+	if text != want {
+		t.Fatalf("copied = %q, want %q", text, want)
+	}
+}
+
 func TestSelectedQuickChecklistPreservesRawBulletBreaks(t *testing.T) {
 	model, _ := fixtureModel(t)
 	startLine := model.lineForRaw(13)
@@ -2100,8 +2166,8 @@ func TestDragSelectTextTrimsCopiedSelectionEdges(t *testing.T) {
 	}))
 	got := next.(Model)
 
-	if copied != "alpha  \nbeta" {
-		t.Fatalf("copied = %q, want trimmed selection edges", copied)
+	if copied != "alpha\nbeta" {
+		t.Fatalf("copied = %q, want line-end padding trimmed", copied)
 	}
 	if !strings.Contains(got.status, "copied 2 lines") {
 		t.Fatalf("status = %q, want trimmed line count", got.status)

@@ -611,8 +611,12 @@ func (m *Model) rebuildContent() {
 
 func (m *Model) addSoftWrapContinuationMarkers() {
 	m.softWrapLines = make([]bool, len(m.contentLines))
+	codeContentLines := renderedCodeBlockContentLines(m.contentLines)
 	for line := 1; line < len(m.contentLines); line++ {
 		if m.rawLineForRendered(line) != m.rawLineForRendered(line-1) {
+			continue
+		}
+		if codeContentLines[line-1] || codeContentLines[line] {
 			continue
 		}
 		if strings.TrimSpace(m.contentLines[line-1]) == "" {
@@ -634,6 +638,23 @@ func (m *Model) addSoftWrapContinuationMarkers() {
 		}
 		m.softWrapLines[line] = true
 	}
+}
+
+func renderedCodeBlockContentLines(lines []string) []bool {
+	content := make([]bool, len(lines))
+	inCodeBlock := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "╭") && strings.HasSuffix(trimmed, "╮"):
+			inCodeBlock = true
+		case strings.HasPrefix(trimmed, "╰") && strings.HasSuffix(trimmed, "╯"):
+			inCodeBlock = false
+		case inCodeBlock:
+			content[i] = true
+		}
+	}
+	return content
 }
 
 func insertWrapContinuationMarkerPlain(line string) string {
@@ -1819,10 +1840,12 @@ func (m Model) selectedLineText() (string, int, bool) {
 		segment := m.selectedLineSegment(line, startColumn, endColumn)
 		raw := m.rawLineForRendered(line)
 		if pendingLine >= 0 {
+			separatorSegment := pendingSegment
 			if m.isSoftWrapLine(pendingLine) || m.isSoftWrapLine(line) {
-				pendingSegment = strings.TrimRight(pendingSegment, " ")
+				separatorSegment = strings.TrimRight(separatorSegment, " ")
 			}
-			separator := m.selectedLineSeparator(pendingLine, line, pendingRaw, raw, pendingSegment, segment)
+			separator := m.selectedLineSeparator(pendingLine, line, pendingRaw, raw, separatorSegment, segment)
+			pendingSegment = trimSelectedLineEnd(pendingSegment, separator)
 			b.WriteString(pendingSegment)
 			b.WriteString(separator)
 		}
@@ -1831,16 +1854,20 @@ func (m Model) selectedLineText() (string, int, bool) {
 		pendingSegment = segment
 	}
 	if pendingLine >= 0 {
-		if m.isSoftWrapLine(pendingLine) {
-			pendingSegment = strings.TrimRight(pendingSegment, " ")
-		}
-		b.WriteString(pendingSegment)
+		b.WriteString(trimSelectedLineEnd(pendingSegment, "\n"))
 	}
 	text := strings.TrimSpace(b.String())
 	if text == "" {
 		return "", 0, false
 	}
 	return text, len(strings.Split(text, "\n")), true
+}
+
+func trimSelectedLineEnd(segment, separator string) string {
+	if separator == "\n" {
+		return strings.TrimRight(segment, " \t")
+	}
+	return strings.TrimRight(segment, " ")
 }
 
 func (m Model) selectedLineSegment(line, startColumn, endColumn int) string {
