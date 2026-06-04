@@ -1648,6 +1648,128 @@ func TestDragSelectTextCopiesRenderedTextOnRelease(t *testing.T) {
 	}
 }
 
+func TestDragSelectTextMouseWheelScrollsAndExtendsSelection(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %02d", i)
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{
+		Rendered: text,
+		Raw:      text,
+	})
+	model.body.Width = 40
+	model.body.Height = 4
+	model.body.MouseWheelDelta = 3
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      lipgloss.Width("line 00"),
+		Y:      3,
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+	}))
+	dragging := next.(Model)
+	endBeforeWheel := dragging.textSelectionEnd.Line
+
+	next, _ = dragging.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      lipgloss.Width("line 00"),
+		Y:      3,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	}))
+	got := next.(Model)
+
+	if got.body.YOffset != 3 {
+		t.Fatalf("body offset = %d, want wheel delta 3", got.body.YOffset)
+	}
+	if got.textSelectionEnd.Line <= endBeforeWheel {
+		t.Fatalf("selection end line = %d, want after %d", got.textSelectionEnd.Line, endBeforeWheel)
+	}
+	if !got.hasLineSelection() {
+		t.Fatal("expected selection to remain active after wheel scroll")
+	}
+}
+
+func TestDragSelectTextAutoScrollsNearBottomEdge(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %02d", i)
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{
+		Rendered: text,
+		Raw:      text,
+	})
+	model.body.Width = 40
+	model.body.Height = 6
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      lipgloss.Width("line 00"),
+		Y:      5,
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+	}))
+	dragging := next.(Model)
+	if !dragging.textSelectionAutoScrollActive {
+		t.Fatal("expected auto-scroll tick to be scheduled near the bottom edge")
+	}
+	endBeforeTick := dragging.textSelectionEnd.Line
+
+	next, _ = dragging.Update(lineSelectionAutoScrollMsg{})
+	got := next.(Model)
+
+	if got.body.YOffset <= 0 {
+		t.Fatalf("body offset = %d, want auto-scroll to move down", got.body.YOffset)
+	}
+	if got.textSelectionEnd.Line <= endBeforeTick {
+		t.Fatalf("selection end line = %d, want after %d", got.textSelectionEnd.Line, endBeforeTick)
+	}
+	if !got.textSelectionAutoScrollActive {
+		t.Fatal("expected auto-scroll to continue while the pointer stays near the bottom edge")
+	}
+}
+
+func TestLineSelectionAutoScrollSpeedsUpCloserToEdge(t *testing.T) {
+	model := New(md.Document{
+		Rendered: strings.Repeat("line\n", 20),
+		Raw:      strings.Repeat("line\n", 20),
+	})
+	model.body.Height = 10
+	model.textSelectionAnchor = selectionPoint{Line: 0, Column: 0}
+	model.textSelectionDragging = true
+	model.textSelectionHasLastMouse = true
+
+	model.textSelectionLastMouseY = 6
+	bottomSlow := model.lineSelectionAutoScrollDelta()
+	model.textSelectionLastMouseY = 9
+	bottomFast := model.lineSelectionAutoScrollDelta()
+
+	if bottomSlow <= 0 || bottomFast <= bottomSlow {
+		t.Fatalf("bottom deltas slow=%d fast=%d, want faster near edge", bottomSlow, bottomFast)
+	}
+
+	model.textSelectionLastMouseY = 3
+	topSlow := -model.lineSelectionAutoScrollDelta()
+	model.textSelectionLastMouseY = 0
+	topFast := -model.lineSelectionAutoScrollDelta()
+
+	if topSlow <= 0 || topFast <= topSlow {
+		t.Fatalf("top deltas slow=%d fast=%d, want faster near edge", topSlow, topFast)
+	}
+}
+
 func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string

@@ -26,6 +26,10 @@ const (
 	outlineWidth    = 42
 	bottomScrollPad = 20
 	reloadInterval  = 500 * time.Millisecond
+
+	lineSelectionAutoScrollInterval = 70 * time.Millisecond
+	lineSelectionAutoScrollEdgeRows = 4
+	lineSelectionAutoScrollMaxDelta = 5
 )
 
 type mode int
@@ -74,6 +78,8 @@ type fileStamp struct {
 }
 
 type fileWatchMsg struct{}
+
+type lineSelectionAutoScrollMsg struct{}
 
 type Options struct {
 	NoWatch     bool
@@ -132,12 +138,16 @@ type Model struct {
 	searchMatches  []SearchMatch
 	selectedMatch  int
 
-	textSelectionStart    selectionPoint
-	textSelectionEnd      selectionPoint
-	textSelectionAnchor   selectionPoint
-	textSelectionDragging bool
-	clearSelectionOnInput bool
-	ignoreModalRelease    bool
+	textSelectionStart            selectionPoint
+	textSelectionEnd              selectionPoint
+	textSelectionAnchor           selectionPoint
+	textSelectionDragging         bool
+	textSelectionLastMouseX       int
+	textSelectionLastMouseY       int
+	textSelectionHasLastMouse     bool
+	textSelectionAutoScrollActive bool
+	clearSelectionOnInput         bool
+	ignoreModalRelease            bool
 }
 
 func New(doc md.Document) Model {
@@ -210,6 +220,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reloadIfFileChanged()
 		return m, watchFileCmd()
 
+	case lineSelectionAutoScrollMsg:
+		m.textSelectionAutoScrollActive = false
+		cmd := m.updateLineSelectionAutoScroll()
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -242,8 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearDeferredLineSelection()
 		}
 		if m.textSelectionAnchor.valid() {
-			if m.updateLineSelectionMouse(msg) {
-				return m, nil
+			handled, selectionCmd := m.updateLineSelectionMouse(msg)
+			if handled {
+				return m, selectionCmd
 			}
 		}
 		if m.outlineVisible && m.mouseInOutline(msg) {
@@ -1552,6 +1568,13 @@ func isMouseRelease(msg tea.MouseMsg) bool {
 	return msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone)
 }
 
+func isMouseWheel(msg tea.MouseMsg) bool {
+	return msg.Button == tea.MouseButtonWheelUp ||
+		msg.Button == tea.MouseButtonWheelDown ||
+		msg.Button == tea.MouseButtonWheelLeft ||
+		msg.Button == tea.MouseButtonWheelRight
+}
+
 func invalidSelectionPoint() selectionPoint {
 	return selectionPoint{Line: -1, Column: -1}
 }
@@ -1579,6 +1602,19 @@ func (m Model) renderedPositionAtMouse(msg tea.MouseMsg) (selectionPoint, bool) 
 	return selectionPoint{Line: line, Column: column}, true
 }
 
+func (m Model) renderedPositionAtSelectionDragMouse(x, y int) (selectionPoint, bool) {
+	if len(m.contentLines) == 0 || m.body.Height <= 0 {
+		return invalidSelectionPoint(), false
+	}
+	bodyY := clamp(y, 0, m.body.Height-1)
+	line := clamp(m.body.YOffset+bodyY, 0, len(m.contentLines)-1)
+	column := clamp(x, 0, lipgloss.Width(m.contentLines[line]))
+	if column < selectionLineStartColumn(m.contentLines[line]) {
+		column = selectionLineStartColumn(m.contentLines[line])
+	}
+	return selectionPoint{Line: line, Column: column}, true
+}
+
 func (m *Model) beginLineSelection(msg tea.MouseMsg) bool {
 	point, ok := m.renderedPositionAtMouse(msg)
 	if !ok {
@@ -1589,26 +1625,27 @@ func (m *Model) beginLineSelection(msg tea.MouseMsg) bool {
 	}
 	m.textSelectionAnchor = point
 	m.textSelectionDragging = false
+	m.rememberLineSelectionMouse(msg.X, msg.Y)
 	return true
 }
 
-func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) bool {
+func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if isMouseWheel(msg) {
+		m.rememberLineSelectionMouse(msg.X, msg.Y)
+		m.scrollBodyForLineSelectionWheel(msg)
+		m.extendLineSelectionToMouse(msg.X, msg.Y)
+		return true, m.startLineSelectionAutoScroll()
+	}
+
 	switch msg.Action {
 	case tea.MouseActionMotion:
-		point, ok := m.renderedPositionAtMouse(msg)
-		if !ok {
-			return true
-		}
-		m.textSelectionStart = m.textSelectionAnchor
-		m.textSelectionEnd = point
-		m.textSelectionDragging = true
-		m.selectedLink = -1
-		m.status = m.lineSelectionStatus()
-		m.refreshContent()
-		return true
+		m.rememberLineSelectionMouse(msg.X, msg.Y)
+		m.extendLineSelectionToMouse(msg.X, msg.Y)
+		return true, m.startLineSelectionAutoScroll()
 	case tea.MouseActionRelease:
 		dragging := m.textSelectionDragging
-		point, ok := m.renderedPositionAtMouse(msg)
+		m.rememberLineSelectionMouse(msg.X, msg.Y)
+		point, ok := m.renderedPositionAtSelectionDragMouse(msg.X, msg.Y)
 		if dragging && ok {
 			m.textSelectionStart = m.textSelectionAnchor
 			m.textSelectionEnd = point
@@ -1616,13 +1653,104 @@ func (m *Model) updateLineSelectionMouse(msg tea.MouseMsg) bool {
 		}
 		m.textSelectionAnchor = invalidSelectionPoint()
 		m.textSelectionDragging = false
+		m.textSelectionAutoScrollActive = false
+		m.textSelectionHasLastMouse = false
 		if dragging {
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	default:
-		return true
+		return true, nil
 	}
+}
+
+func (m *Model) rememberLineSelectionMouse(x, y int) {
+	m.textSelectionLastMouseX = x
+	m.textSelectionLastMouseY = y
+	m.textSelectionHasLastMouse = true
+}
+
+func (m *Model) extendLineSelectionToMouse(x, y int) bool {
+	point, ok := m.renderedPositionAtSelectionDragMouse(x, y)
+	if !ok {
+		return false
+	}
+	m.textSelectionStart = m.textSelectionAnchor
+	m.textSelectionEnd = point
+	m.textSelectionDragging = true
+	m.selectedLink = -1
+	m.status = m.lineSelectionStatus()
+	m.refreshContent()
+	return true
+}
+
+func (m *Model) scrollBodyForLineSelectionWheel(msg tea.MouseMsg) bool {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return m.scrollBodyForLineSelectionDelta(-m.mouseWheelDelta())
+	case tea.MouseButtonWheelDown:
+		return m.scrollBodyForLineSelectionDelta(m.mouseWheelDelta())
+	default:
+		return false
+	}
+}
+
+func (m Model) mouseWheelDelta() int {
+	if m.body.MouseWheelDelta > 0 {
+		return m.body.MouseWheelDelta
+	}
+	return 1
+}
+
+func (m *Model) updateLineSelectionAutoScroll() tea.Cmd {
+	if !m.textSelectionAnchor.valid() || !m.textSelectionDragging {
+		return nil
+	}
+	delta := m.lineSelectionAutoScrollDelta()
+	if delta == 0 || !m.scrollBodyForLineSelectionDelta(delta) {
+		return nil
+	}
+	m.extendLineSelectionToMouse(m.textSelectionLastMouseX, m.textSelectionLastMouseY)
+	return m.startLineSelectionAutoScroll()
+}
+
+func (m *Model) startLineSelectionAutoScroll() tea.Cmd {
+	if m.textSelectionAutoScrollActive || m.lineSelectionAutoScrollDelta() == 0 {
+		return nil
+	}
+	m.textSelectionAutoScrollActive = true
+	return tea.Tick(lineSelectionAutoScrollInterval, func(time.Time) tea.Msg {
+		return lineSelectionAutoScrollMsg{}
+	})
+}
+
+func (m Model) lineSelectionAutoScrollDelta() int {
+	if !m.textSelectionAnchor.valid() || !m.textSelectionDragging || !m.textSelectionHasLastMouse || m.body.Height <= 0 {
+		return 0
+	}
+	edgeRows := min(lineSelectionAutoScrollEdgeRows, max(1, m.body.Height/2))
+	y := m.textSelectionLastMouseY
+	if y < edgeRows {
+		return -min(lineSelectionAutoScrollMaxDelta, edgeRows-y)
+	}
+	bottomEdgeStart := m.body.Height - edgeRows
+	if y >= bottomEdgeStart {
+		return min(lineSelectionAutoScrollMaxDelta, y-bottomEdgeStart+1)
+	}
+	return 0
+}
+
+func (m *Model) scrollBodyForLineSelectionDelta(delta int) bool {
+	if delta == 0 {
+		return false
+	}
+	previous := m.body.YOffset
+	if delta < 0 {
+		m.body.ScrollUp(-delta)
+	} else {
+		m.body.ScrollDown(delta)
+	}
+	return m.body.YOffset != previous
 }
 
 func (m Model) hasLineSelection() bool {
@@ -1856,6 +1984,8 @@ func (m *Model) clearLineSelection() bool {
 	m.textSelectionEnd = invalidSelectionPoint()
 	m.textSelectionAnchor = invalidSelectionPoint()
 	m.textSelectionDragging = false
+	m.textSelectionHasLastMouse = false
+	m.textSelectionAutoScrollActive = false
 	m.clearSelectionOnInput = false
 	m.ignoreModalRelease = false
 	return hadSelection
