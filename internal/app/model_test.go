@@ -1815,6 +1815,53 @@ func TestSelectedNestedListsPreservesItemBreaks(t *testing.T) {
 	}
 }
 
+func TestSelectedExternalLinksKeepsWrappedURLContinuous(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 58)
+	startLine := model.lineForRaw(68)
+	endLine := lastRenderedLineForRaw(model, 73)
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected external links text")
+	}
+	normalized := trimLineEndSpaces(text)
+	if strings.Contains(normalized, "get- started") {
+		t.Fatalf("copied URL inserted soft-wrap space: %q", normalized)
+	}
+	if !strings.Contains(normalized, "https://docs.github.com/en/get-started/writing-on-github") {
+		t.Fatalf("copied URL was not kept continuous: %q", normalized)
+	}
+	if strings.Contains(normalized, "↪") {
+		t.Fatalf("copied external links included visual wrap marker: %q", normalized)
+	}
+}
+
+func TestSoftWrapMarkersSkipQuotesAndTables(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 60)
+	for raw := 381; raw < 394; raw++ {
+		for line := model.lineForRaw(raw); line < len(model.contentLines) && model.rawLineForRendered(line) == raw; line++ {
+			if strings.Contains(model.contentLines[line], "↪") {
+				t.Fatalf("quote raw line %d rendered line %d has unexpected marker: %q", raw, line, model.contentLines[line])
+			}
+		}
+	}
+	for raw := 394; raw < 406; raw++ {
+		for line := model.lineForRaw(raw); line < len(model.contentLines) && model.rawLineForRendered(line) == raw; line++ {
+			if strings.Contains(model.contentLines[line], "↪") {
+				t.Fatalf("table raw line %d rendered line %d has unexpected marker: %q", raw, line, model.contentLines[line])
+			}
+		}
+	}
+}
+
 func TestSoftWrapMarkersSkipFirstRenderedContentForRawLine(t *testing.T) {
 	model, _ := fixtureModelAtWidth(t, 60)
 	firstHeading := model.lineForRaw(1)

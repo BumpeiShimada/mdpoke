@@ -602,7 +602,9 @@ func (m *Model) addSoftWrapContinuationMarkers() {
 		if strings.TrimSpace(m.contentLines[line-1]) == "" {
 			continue
 		}
-		if strings.TrimSpace(m.contentLines[line]) == "" || renderedBlockBoundaryLine(m.contentLines[line]) {
+		if strings.TrimSpace(m.contentLines[line]) == "" ||
+			renderedStructuralLine(m.contentLines[line-1]) ||
+			renderedStructuralLine(m.contentLines[line]) {
 			continue
 		}
 		if _, ok := wrapContinuationPrefixEndColumn(m.contentLines[line]); ok {
@@ -1764,7 +1766,38 @@ func shouldRestoreSoftWrapSpace(previousSegment, segment string) bool {
 	if previousSegment == "" || segment == "" {
 		return false
 	}
+	if strings.ContainsAny(lastRuneString(previousSegment), "-/._~:@?#%=&") {
+		return false
+	}
+	if strings.ContainsAny(firstRuneString(segment), "-/._~:@?#%=&") {
+		return false
+	}
 	return !strings.HasSuffix(previousSegment, " ") && !strings.HasPrefix(segment, " ")
+}
+
+func lastRuneString(s string) string {
+	for i := len(s); i > 0; {
+		r, size := utf8.DecodeLastRuneInString(s[:i])
+		if r == utf8.RuneError && size == 0 {
+			return ""
+		}
+		if r == ' ' || r == '\t' {
+			i -= size
+			continue
+		}
+		return string(r)
+	}
+	return ""
+}
+
+func firstRuneString(s string) string {
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		return string(r)
+	}
+	return ""
 }
 
 func leadingWhitespaceByteIndex(line string) int {
@@ -1795,11 +1828,15 @@ func renderedBlockBoundaryLine(line string) bool {
 		return false
 	}
 	switch []rune(trimmed)[0] {
-	case '╭', '╰', '┌', '└', '┬', '┴':
+	case '╭', '╰', '┌', '└', '┬', '┴', '┐', '┘', '├', '┤', '┼', '│', '─', '|':
 		return true
 	default:
 		return false
 	}
+}
+
+func renderedStructuralLine(line string) bool {
+	return renderedBlockBoundaryLine(line)
 }
 
 func (m Model) lineSelectionStatus() string {
