@@ -20,7 +20,7 @@ NB! not sure if the binary for Windows or Linux works yet.
 
 ## Highlights
 
-### Read with an optional heading outline (Open/Close with `o` key)
+### Read with an optional heading outline (Open/Close with `o` key or `→`/`←`)
 
 <img width="1032" height="692" alt="first" src="https://github.com/user-attachments/assets/08e920f5-7c34-4026-91f7-b42a63fe709f" />
 
@@ -76,7 +76,7 @@ Use `--no-watch` when automatic reloads are not desired, `--max-size` to tighten
 
 By default, `mdpoke` watches the opened file for changes, refuses symlinked Markdown files, limits reads to 20 MiB, and strips terminal control characters before rendering or parsing links/headings.
 
-## Other functions
+## Other features
 
 ### Jump into internal Markdown anchors with a confirmation prompt
 
