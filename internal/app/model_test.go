@@ -1751,12 +1751,104 @@ func TestSelectedCodeBlockKeepsBottomBorderOnSeparateLine(t *testing.T) {
 	}
 }
 
+func TestSelectedLongWrappingRestoresSoftWrapSpaces(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 60)
+	startLine := model.lineForRaw(445)
+	endLine := model.lineForRaw(449) - 1
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected Long Wrapping text")
+	}
+	normalized := trimLineEndSpaces(text)
+	if strings.Contains(normalized, "wrapacross") {
+		t.Fatalf("copied long paragraph collapsed soft-wrap space: %q", normalized)
+	}
+	if !strings.Contains(normalized, "wrap across multiple terminal widths") {
+		t.Fatalf("copied long paragraph did not restore soft-wrap spaces: %q", normalized)
+	}
+	if strings.Contains(normalized, "↪") {
+		t.Fatalf("copied long paragraph included visual wrap marker: %q", normalized)
+	}
+}
+
+func TestSelectedNestedListsPreservesItemBreaks(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 28)
+	startLine := model.lineForRaw(138)
+	endLine := lastRenderedLineForRaw(model, 143)
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected nested list text")
+	}
+	normalized := trimLineEndSpaces(text)
+	if strings.Contains(normalized, "numbered item     1. Nested") {
+		t.Fatalf("copied nested list collapsed adjacent items: %q", normalized)
+	}
+	if !strings.Contains(normalized, "First numbered item\n  1. Nested numbered item") {
+		t.Fatalf("copied nested list did not preserve nested item break: %q", normalized)
+	}
+	if !strings.Contains(normalized, "Second numbered item\n  • Mixed bullet under numbered item") {
+		t.Fatalf("copied nested list did not preserve mixed bullet break: %q", normalized)
+	}
+	if !strings.Contains(normalized, "Mixed bullet under numbered item\n    • Mixed nested bullet under numbered item") {
+		t.Fatalf("copied nested list did not preserve deep mixed bullet break: %q", normalized)
+	}
+	if strings.Contains(normalized, "↪") {
+		t.Fatalf("copied nested list included visual wrap marker: %q", normalized)
+	}
+}
+
+func TestSoftWrapMarkersSkipFirstRenderedContentForRawLine(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 60)
+	firstHeading := model.lineForRaw(1)
+	if strings.Contains(model.contentLines[firstHeading], "↪") {
+		t.Fatalf("first heading line has unexpected wrap marker: %q", model.contentLines[firstHeading])
+	}
+
+	longWrapping := model.lineForRaw(447)
+	foundMarker := false
+	for line := longWrapping + 1; line < len(model.contentLines) && model.rawLineForRendered(line) == 447; line++ {
+		if strings.Contains(model.contentLines[line], "↪") {
+			foundMarker = true
+			break
+		}
+	}
+	if !foundMarker {
+		t.Fatal("expected soft-wrap continuation marker in long paragraph")
+	}
+}
+
 func trimLineEndSpaces(text string) string {
 	lines := strings.Split(text, "\n")
 	for i := range lines {
 		lines[i] = strings.TrimRight(lines[i], " ")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func lastRenderedLineForRaw(model Model, raw int) int {
+	line := model.lineForRaw(raw)
+	for line+1 < len(model.contentLines) && model.rawLineForRendered(line+1) == raw {
+		line++
+	}
+	return line
 }
 
 func TestDragSelectTextSkipsVisualLeftMargin(t *testing.T) {
@@ -2310,12 +2402,16 @@ func TestLongWideHeadingsWithTrailingSpacesMapToRenderedHeadingLines(t *testing.
 }
 
 func fixtureModel(t *testing.T) (Model, []md.Heading) {
+	return fixtureModelAtWidth(t, 100)
+}
+
+func fixtureModelAtWidth(t *testing.T, width int) (Model, []md.Heading) {
 	t.Helper()
 	source, err := os.ReadFile("../../testdata/fixtures/comprehensive.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := md.Render(string(source), 100)
+	rendered, err := md.Render(string(source), width)
 	if err != nil {
 		t.Fatal(err)
 	}

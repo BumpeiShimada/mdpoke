@@ -117,6 +117,7 @@ type Model struct {
 	renderedLines  []string
 	baseLines      []string
 	contentLines   []string
+	softWrapLines  []bool
 	rawToRendered  []int
 	renderedToRaw  []int
 	tasks          []taskItem
@@ -581,6 +582,7 @@ func (m *Model) rebuildContent() {
 	m.renderedLines = strings.Split(rendered, "\n")
 	m.contentLines = strings.Split(plain, "\n")
 	m.rawToRendered, m.renderedToRaw = buildLineMaps(m.doc.Raw, m.contentLines)
+	m.addSoftWrapContinuationMarkers()
 	m.tasks = parseTaskItems(m.doc.Raw)
 	if m.selectedTask >= len(m.tasks) {
 		m.selectedTask = -1
@@ -589,6 +591,41 @@ func (m *Model) rebuildContent() {
 	m.rebuildBaseLines()
 	m.refreshContent()
 	m.refreshOutline()
+}
+
+func (m *Model) addSoftWrapContinuationMarkers() {
+	m.softWrapLines = make([]bool, len(m.contentLines))
+	for line := 1; line < len(m.contentLines); line++ {
+		if m.rawLineForRendered(line) != m.rawLineForRendered(line-1) {
+			continue
+		}
+		if strings.TrimSpace(m.contentLines[line-1]) == "" {
+			continue
+		}
+		if strings.TrimSpace(m.contentLines[line]) == "" || renderedBlockBoundaryLine(m.contentLines[line]) {
+			continue
+		}
+		if _, ok := wrapContinuationPrefixEndColumn(m.contentLines[line]); ok {
+			continue
+		}
+
+		indentWidth := leadingWhitespaceWidth(m.contentLines[line])
+		m.contentLines[line] = insertWrapContinuationMarkerPlain(m.contentLines[line])
+		if line < len(m.renderedLines) {
+			m.renderedLines[line] = insertWrapContinuationMarkerANSI(m.renderedLines[line], indentWidth)
+		}
+		m.softWrapLines[line] = true
+	}
+}
+
+func insertWrapContinuationMarkerPlain(line string) string {
+	indentEnd := leadingWhitespaceByteIndex(line)
+	return line[:indentEnd] + "↪ " + line[indentEnd:]
+}
+
+func insertWrapContinuationMarkerANSI(line string, indentWidth int) string {
+	indentEnd := ansiVisibleColumnByteIndex(line, indentWidth)
+	return line[:indentEnd] + "↪ " + line[indentEnd:]
 }
 
 func (m *Model) refreshContent() {
@@ -1644,16 +1681,30 @@ func (m Model) selectedLineText() (string, int, bool) {
 		return "", 0, false
 	}
 	var b strings.Builder
-	lastRaw := -1
+	pendingLine := -1
+	pendingRaw := -1
+	pendingSegment := ""
 	for line := start.Line; line <= end.Line; line++ {
 		startColumn, endColumn, _ := m.textSelectionColumnsForLine(line, start, end)
 		segment := m.selectedLineSegment(line, startColumn, endColumn)
 		raw := m.rawLineForRendered(line)
-		if line > start.Line && !m.joinSelectedRenderedLines(line-1, line, lastRaw, raw) {
-			b.WriteRune('\n')
+		if pendingLine >= 0 {
+			if m.isSoftWrapLine(pendingLine) || m.isSoftWrapLine(line) {
+				pendingSegment = strings.TrimRight(pendingSegment, " ")
+			}
+			separator := m.selectedLineSeparator(pendingLine, line, pendingRaw, raw, pendingSegment, segment)
+			b.WriteString(pendingSegment)
+			b.WriteString(separator)
 		}
-		b.WriteString(segment)
-		lastRaw = raw
+		pendingLine = line
+		pendingRaw = raw
+		pendingSegment = segment
+	}
+	if pendingLine >= 0 {
+		if m.isSoftWrapLine(pendingLine) {
+			pendingSegment = strings.TrimRight(pendingSegment, " ")
+		}
+		b.WriteString(pendingSegment)
 	}
 	text := strings.TrimSpace(b.String())
 	if text == "" {
@@ -1695,6 +1746,27 @@ func wrapContinuationPrefixEndColumn(line string) (int, bool) {
 	return lipgloss.Width(line[:indentEnd]) + lipgloss.Width("↪ "), true
 }
 
+func (m Model) selectedLineSeparator(previousLine, line, previousRaw, raw int, previousSegment, segment string) string {
+	if !m.joinSelectedRenderedLines(previousLine, line, previousRaw, raw) {
+		return "\n"
+	}
+	if m.isSoftWrapLine(line) && shouldRestoreSoftWrapSpace(previousSegment, segment) {
+		return " "
+	}
+	return ""
+}
+
+func (m Model) isSoftWrapLine(line int) bool {
+	return line >= 0 && line < len(m.softWrapLines) && m.softWrapLines[line]
+}
+
+func shouldRestoreSoftWrapSpace(previousSegment, segment string) bool {
+	if previousSegment == "" || segment == "" {
+		return false
+	}
+	return !strings.HasSuffix(previousSegment, " ") && !strings.HasPrefix(segment, " ")
+}
+
 func leadingWhitespaceByteIndex(line string) int {
 	for i, r := range line {
 		if r != ' ' && r != '\t' {
@@ -1709,6 +1781,9 @@ func (m Model) joinSelectedRenderedLines(previousLine, line, previousRaw, raw in
 		return false
 	}
 	if previousLine < 0 || previousLine >= len(m.contentLines) || line < 0 || line >= len(m.contentLines) {
+		return false
+	}
+	if strings.TrimSpace(m.contentLines[previousLine]) == "" || strings.TrimSpace(m.contentLines[line]) == "" {
 		return false
 	}
 	return !renderedBlockBoundaryLine(m.contentLines[previousLine]) && !renderedBlockBoundaryLine(m.contentLines[line])
@@ -2410,23 +2485,58 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 }
 
 func findRenderedLine(rendered []string, key string, cursor int) int {
+	for _, candidate := range lineMapSearchKeys(key) {
+		if line, ok := findRenderedLineContaining(rendered, candidate, cursor); ok {
+			return line
+		}
+	}
+	return clamp(cursor, 0, max(0, len(rendered)-1))
+}
+
+func findRenderedLineContaining(rendered []string, key string, cursor int) (int, bool) {
 	windowEnd := min(len(rendered), cursor+16)
 	for i := cursor; i < windowEnd; i++ {
 		if strings.Contains(rendered[i], key) {
-			return i
+			return i, true
 		}
 	}
 	for i := cursor; i < len(rendered); i++ {
 		if strings.Contains(rendered[i], key) {
-			return i
+			return i, true
 		}
 	}
 	for i := 0; i < cursor; i++ {
 		if strings.Contains(rendered[i], key) {
-			return i
+			return i, true
 		}
 	}
-	return clamp(cursor, 0, max(0, len(rendered)-1))
+	return 0, false
+}
+
+func lineMapSearchKeys(key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+
+	keys := []string{key}
+	fields := strings.Fields(key)
+	if len(fields) > 0 {
+		for count := min(3, len(fields)); count >= 1; count-- {
+			candidate := strings.Join(fields[:count], " ")
+			if lipgloss.Width(candidate) >= 4 && candidate != key {
+				keys = append(keys, candidate)
+			}
+		}
+	}
+
+	if lipgloss.Width(key) > 12 {
+		prefix := displayColumnSlice(key, 0, 12)
+		if strings.TrimSpace(prefix) != "" && prefix != key {
+			keys = append(keys, strings.TrimSpace(prefix))
+		}
+	}
+	return keys
 }
 
 var (
