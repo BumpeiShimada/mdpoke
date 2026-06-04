@@ -5,9 +5,9 @@
 "Poking around" means that you can:
 
 - Read with an optional heading outline
-- Jump around files with search
 - Drag to select text and release to copy
 - Toggle checkboxes
+- Jump around files with search
 - ...and more!
 
 ## Install
@@ -20,13 +20,9 @@ NB! not sure if the binary for Windows or Linux works yet.
 
 ## Highlights
 
-### Read with an optional heading outline
+### Read with an optional heading outline (Open/Close with `o` key)
 
 <img width="1032" height="692" alt="first" src="https://github.com/user-attachments/assets/08e920f5-7c34-4026-91f7-b42a63fe709f" />
-
-### Jump around files with search
-
-<img width="1032" height="692" alt="second" src="https://github.com/user-attachments/assets/4c2711a1-ab3f-4d1f-9638-b612b0d47753" />
 
 ### Drag to select text and release to copy
 
@@ -36,13 +32,9 @@ NB! not sure if the binary for Windows or Linux works yet.
 
 <img width="1032" height="692" alt="third" src="https://github.com/user-attachments/assets/0b9d23e2-c25d-4e8d-86a3-4f6ed040a7d3" />
 
-### Copy links with mouse click
+### Jump around files with search
 
-<img width="1032" height="692" alt="forth" src="https://github.com/user-attachments/assets/4ed4380d-c7b4-4b60-86b8-291daa10cd50" />
-
-### Jump into internal Markdown anchors with a confirmation prompt
-
-<img width="1032" height="692" alt="sixth" src="https://github.com/user-attachments/assets/c7f619d2-884b-49cc-b35f-db8ccf9cb952" />
+<img width="1032" height="692" alt="second" src="https://github.com/user-attachments/assets/4c2711a1-ab3f-4d1f-9638-b612b0d47753" />
 
 ## Run
 
@@ -83,3 +75,13 @@ Use `--no-watch` when automatic reloads are not desired, `--max-size` to tighten
 ## Safety And Limits
 
 By default, `mdpoke` watches the opened file for changes, refuses symlinked Markdown files, limits reads to 20 MiB, and strips terminal control characters before rendering or parsing links/headings.
+
+## Other functions
+
+### Jump into internal Markdown anchors with a confirmation prompt
+
+<img width="1032" height="692" alt="sixth" src="https://github.com/user-attachments/assets/c7f619d2-884b-49cc-b35f-db8ccf9cb952" />
+
+### Copy links with mouse click
+
+<img width="1032" height="692" alt="forth" src="https://github.com/user-attachments/assets/4ed4380d-c7b4-4b60-86b8-291daa10cd50" />
