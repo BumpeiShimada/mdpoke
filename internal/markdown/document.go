@@ -218,14 +218,48 @@ func hardWrapANSILine(line string, width int) []string {
 		return []string{line}
 	}
 
+	prefix := wrapContinuationPrefix(line, width)
+	prefixWidth := lipgloss.Width(prefix)
+	nextWidth := max(1, width-prefixWidth)
 	totalWidth := lipgloss.Width(StripANSI(line))
 	lines := make([]string, 0, (totalWidth/width)+1)
 
-	for start := 0; start < totalWidth; start += width {
-		end := min(totalWidth, start+width)
-		lines = append(lines, ansiVisibleColumnSlice(line, start, end))
+	start := 0
+	segmentWidth := width
+	for start < totalWidth {
+		end := min(totalWidth, start+segmentWidth)
+		segment := ansiVisibleColumnSlice(line, start, end)
+		if start > 0 {
+			segment = prefix + segment
+		}
+		lines = append(lines, segment)
+		start = end
+		segmentWidth = nextWidth
 	}
 	return lines
+}
+
+func wrapContinuationPrefix(line string, width int) string {
+	indent := renderedLeadingWhitespace(StripANSI(line))
+	prefix := indent + "↪ "
+	if lipgloss.Width(prefix) < width {
+		return prefix
+	}
+	if width > lipgloss.Width("↪ ") {
+		return "↪ "
+	}
+	return ""
+}
+
+func renderedLeadingWhitespace(line string) string {
+	var b strings.Builder
+	for _, r := range line {
+		if r != ' ' && r != '\t' {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func ansiVisibleColumnSlice(line string, start, end int) string {

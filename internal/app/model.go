@@ -1647,9 +1647,9 @@ func (m Model) selectedLineText() (string, int, bool) {
 	lastRaw := -1
 	for line := start.Line; line <= end.Line; line++ {
 		startColumn, endColumn, _ := m.textSelectionColumnsForLine(line, start, end)
-		segment := displayColumnSlice(m.contentLines[line], startColumn, endColumn)
+		segment := m.selectedLineSegment(line, startColumn, endColumn)
 		raw := m.rawLineForRendered(line)
-		if line > start.Line && raw != lastRaw {
+		if line > start.Line && !m.joinSelectedRenderedLines(line-1, line, lastRaw, raw) {
 			b.WriteRune('\n')
 		}
 		b.WriteString(segment)
@@ -1660,6 +1660,71 @@ func (m Model) selectedLineText() (string, int, bool) {
 		return "", 0, false
 	}
 	return text, len(strings.Split(text, "\n")), true
+}
+
+func (m Model) selectedLineSegment(line, startColumn, endColumn int) string {
+	if line < 0 || line >= len(m.contentLines) {
+		return ""
+	}
+	content := m.contentLines[line]
+	if !m.isWrapContinuationLine(line) {
+		return displayColumnSlice(content, startColumn, endColumn)
+	}
+	prefixEnd, ok := wrapContinuationPrefixEndColumn(content)
+	if !ok {
+		return displayColumnSlice(content, startColumn, endColumn)
+	}
+	if endColumn <= prefixEnd {
+		return ""
+	}
+	return displayColumnSlice(content, max(startColumn, prefixEnd), endColumn)
+}
+
+func (m Model) isWrapContinuationLine(line int) bool {
+	if line <= 0 || line >= len(m.contentLines) {
+		return false
+	}
+	return m.rawLineForRendered(line) == m.rawLineForRendered(line-1)
+}
+
+func wrapContinuationPrefixEndColumn(line string) (int, bool) {
+	indentEnd := leadingWhitespaceByteIndex(line)
+	if !strings.HasPrefix(line[indentEnd:], "↪ ") {
+		return 0, false
+	}
+	return lipgloss.Width(line[:indentEnd]) + lipgloss.Width("↪ "), true
+}
+
+func leadingWhitespaceByteIndex(line string) int {
+	for i, r := range line {
+		if r != ' ' && r != '\t' {
+			return i
+		}
+	}
+	return len(line)
+}
+
+func (m Model) joinSelectedRenderedLines(previousLine, line, previousRaw, raw int) bool {
+	if raw != previousRaw {
+		return false
+	}
+	if previousLine < 0 || previousLine >= len(m.contentLines) || line < 0 || line >= len(m.contentLines) {
+		return false
+	}
+	return !renderedBlockBoundaryLine(m.contentLines[previousLine]) && !renderedBlockBoundaryLine(m.contentLines[line])
+}
+
+func renderedBlockBoundaryLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	switch []rune(trimmed)[0] {
+	case '╭', '╰', '┌', '└', '┬', '┴':
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) lineSelectionStatus() string {
@@ -2433,11 +2498,20 @@ func normalizeMarkdownLine(line string) string {
 	line = strings.TrimLeft(line, "#")
 	line = strings.TrimSpace(line)
 	line = listMarkerRE.ReplaceAllString(line, "")
-	line = markdownLinkRE.ReplaceAllString(line, "$1")
+	line = normalizeMarkdownLinksForLineMap(line)
+	line = strings.ReplaceAll(line, "`", "")
 	line = strings.Trim(line, "<>")
 	line = strings.Trim(line, "`*_~")
 	line = truncateUTF8Bytes(line, 48)
 	return strings.TrimSpace(line)
+}
+
+func normalizeMarkdownLinksForLineMap(line string) string {
+	loc := markdownLinkRE.FindStringSubmatchIndex(line)
+	if loc == nil {
+		return line
+	}
+	return line[:loc[0]] + line[loc[2]:loc[3]]
 }
 
 func truncateUTF8Bytes(s string, limit int) string {

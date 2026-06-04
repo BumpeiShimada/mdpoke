@@ -140,7 +140,7 @@ func TestRenderContentHighlightsWrappedBareAutolinkSegments(t *testing.T) {
 		bareAutoLinkStyle = oldBareAutoLinkStyle
 	}()
 	model := New(md.Document{
-		Rendered: "こちらがURL: https://example.com/path/to/\n日本語リソース名\n",
+		Rendered: "こちらがURL: https://example.com/path/to/\n↪ 日本語リソース名\n",
 		Raw:      "こちらがURL: " + url + "\n",
 		Links: []md.Link{
 			{Text: url, URL: url, Line: 1},
@@ -1521,7 +1521,7 @@ func TestClickWrappedBareURLContinuationCopiesFullURL(t *testing.T) {
 		Raw:      "こちらがURL: " + url + "\n",
 	})
 
-	link, ok := model.linkAtRenderedPosition(1, lipgloss.Width("日本"), 1)
+	link, ok := model.linkAtRenderedPosition(1, lipgloss.Width("↪ 日本"), 1)
 	if !ok {
 		t.Fatal("expected wrapped URL continuation to be clickable")
 	}
@@ -1660,7 +1660,7 @@ func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
 	}()
 
 	model := New(md.Document{
-		Rendered: "abcdefghijklmnop\nqrstuvwxyz\n",
+		Rendered: "abcdefghijklmnop\n↪ qrstuvwxyz\n",
 		Raw:      "abcdefghijklmnopqrstuvwxyz\n",
 	})
 	model.body.Width = 40
@@ -1673,13 +1673,13 @@ func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
 		Button: tea.MouseButtonLeft,
 	}))
 	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
-		X:      10,
+		X:      lipgloss.Width("↪ qrstuvwxyz"),
 		Y:      1,
 		Action: tea.MouseActionMotion,
 		Button: tea.MouseButtonLeft,
 	}))
 	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
-		X:      10,
+		X:      lipgloss.Width("↪ qrstuvwxyz"),
 		Y:      1,
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
@@ -1692,6 +1692,71 @@ func TestDragSelectTextJoinsVisualWrapsWithinRawLine(t *testing.T) {
 	if !strings.Contains(got.status, "copied 1 line") {
 		t.Fatalf("status = %q, want copied line count based on copied text", got.status)
 	}
+}
+
+func TestSelectedQuickChecklistPreservesRawBulletBreaks(t *testing.T) {
+	model, _ := fixtureModel(t)
+	startLine := model.lineForRaw(13)
+	endLine := model.lineForRaw(26) - 1
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected Quick Checklist text")
+	}
+	normalized := trimLineEndSpaces(text)
+	if strings.Contains(normalized, "mouse wheel.         • Press /fixture") {
+		t.Fatalf("copied checklist collapsed adjacent bullets: %q", normalized)
+	}
+	if !strings.Contains(normalized, "mouse wheel.\n• Press /fixture") {
+		t.Fatalf("copied checklist did not preserve bullet line break: %q", normalized)
+	}
+	if !strings.Contains(normalized, "Jump Target.\n• Press y on External Example") {
+		t.Fatalf("copied checklist collapsed link bullets: %q", normalized)
+	}
+	if !strings.Contains(normalized, "• Press ? and search for copy.") {
+		t.Fatalf("copied checklist did not include final bullet: %q", normalized)
+	}
+}
+
+func TestSelectedCodeBlockKeepsBottomBorderOnSeparateLine(t *testing.T) {
+	model, _ := fixtureModel(t)
+	startLine := model.lineForRaw(215)
+	endLine := model.lineForRaw(220) - 1
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected code block text")
+	}
+	if strings.Contains(text, "\"));╰") {
+		t.Fatalf("copied code block joined final code line and bottom border: %q", text)
+	}
+	if !strings.Contains(text, "console.log(fixture.join(\", \"));\n╰") {
+		t.Fatalf("copied code block did not keep bottom border on a separate line: %q", text)
+	}
+}
+
+func trimLineEndSpaces(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestDragSelectTextSkipsVisualLeftMargin(t *testing.T) {

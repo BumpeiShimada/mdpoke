@@ -537,11 +537,21 @@ func TestRenderHardWrapsLongTextWithoutSpaces(t *testing.T) {
 			t.Fatalf("line width = %d, want <= 24 for %q:\n%s", displayWidth(line), line, plain)
 		}
 	}
-	if strings.Contains(plain, "↪") {
-		t.Fatalf("did not expect continuation marker in wrapped text:\n%s", plain)
+	if !strings.Contains(plain, "↪") {
+		t.Fatalf("expected continuation marker in wrapped text:\n%s", plain)
 	}
-	if lines[1] != "wxyz0123456789abcdefghij" {
-		t.Fatalf("second wrapped line = %q, want continuation at left edge:\n%s", lines[1], plain)
+	if !strings.Contains(lines[1], "↪ ") {
+		t.Fatalf("second wrapped line = %q, want continuation marker:\n%s", lines[1], plain)
+	}
+}
+
+func TestHardWrapContinuationMarkerFollowsIndent(t *testing.T) {
+	lines := hardWrapANSILine("    abcdefghijklmnopqrstuvwxyz", 14)
+	if len(lines) < 2 {
+		t.Fatalf("expected hard wrap, got %#v", lines)
+	}
+	if !strings.HasPrefix(lines[1], "    ↪ ") {
+		t.Fatalf("continuation line = %q, want marker after indent", lines[1])
 	}
 }
 
