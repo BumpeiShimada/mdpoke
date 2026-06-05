@@ -1262,7 +1262,7 @@ func (m *Model) toggleSelectedTask() bool {
 	if m.selectedTask < 0 || m.selectedTask >= len(m.tasks) {
 		return false
 	}
-	m.toggleTask(m.selectedTask)
+	m.toggleTask(m.selectedTask, true)
 	return true
 }
 
@@ -1273,7 +1273,7 @@ func (m *Model) toggleTaskAtMouse(msg tea.MouseMsg) bool {
 	}
 	m.selectedLink = -1
 	m.selectedTask = index
-	m.toggleTask(index)
+	m.toggleTask(index, false)
 	return true
 }
 
@@ -1307,7 +1307,7 @@ func (m Model) taskAtMouse(msg tea.MouseMsg) (int, bool) {
 	return -1, false
 }
 
-func (m *Model) toggleTask(index int) {
+func (m *Model) toggleTask(index int, scrollToTask bool) {
 	if index < 0 || index >= len(m.tasks) {
 		return
 	}
@@ -1334,13 +1334,13 @@ func (m *Model) toggleTask(index int) {
 		}
 	}
 
-	if m.applyFastTaskToggle(index, nextRaw, nextLine, task.Line) {
+	if m.applyFastTaskToggle(index, nextRaw, nextLine, task.Line, scrollToTask) {
 		return
 	}
-	m.renderToggledDocument(nextRaw, task.Line)
+	m.renderToggledDocument(nextRaw, task.Line, scrollToTask)
 }
 
-func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string, rawLine int) bool {
+func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string, rawLine int, scrollToTask bool) bool {
 	checked, ok := taskLineChecked(nextLine)
 	if !ok {
 		return false
@@ -1366,11 +1366,11 @@ func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string, rawLine
 	m.tasks = parseTaskItems(m.doc.Raw)
 	m.rebuildLineIndexes()
 	m.rebuildBaseLinesForRaw(rawLine)
-	m.focusToggledTask(index)
+	m.focusToggledTask(index, scrollToTask)
 	return true
 }
 
-func (m *Model) renderToggledDocument(nextRaw string, rawLine int) {
+func (m *Model) renderToggledDocument(nextRaw string, rawLine int, scrollToTask bool) {
 	outline, links := md.ParseStructure([]byte(nextRaw))
 	nextDoc := md.Document{
 		Path:    m.doc.Path,
@@ -1388,15 +1388,17 @@ func (m *Model) renderToggledDocument(nextRaw string, rawLine int) {
 	m.doc = renderedDoc
 	m.stamp = currentFileStamp(m.doc.Path)
 	m.rebuildContent()
-	m.focusToggledTaskLine(rawLine)
+	m.focusToggledTaskLine(rawLine, scrollToTask)
 }
 
-func (m *Model) focusToggledTask(preferred int) {
+func (m *Model) focusToggledTask(preferred int, scrollToTask bool) {
 	if preferred >= 0 && preferred < len(m.tasks) {
 		task := m.tasks[preferred]
 		m.selectedTask = preferred
 		m.status = m.taskStatus(task)
-		m.jumpToRenderedLine(m.lineForTaskIndex(preferred), false)
+		if scrollToTask {
+			m.jumpToRenderedLine(m.lineForTaskIndex(preferred), false)
+		}
 		m.refreshContent()
 		return
 	}
@@ -1404,12 +1406,14 @@ func (m *Model) focusToggledTask(preferred int) {
 	m.refreshContent()
 }
 
-func (m *Model) focusToggledTaskLine(rawLine int) {
+func (m *Model) focusToggledTaskLine(rawLine int, scrollToTask bool) {
 	for i, nextTask := range m.tasks {
 		if nextTask.Line == rawLine {
 			m.selectedTask = i
 			m.status = m.taskStatus(nextTask)
-			m.jumpToRenderedLine(m.lineForTaskIndex(i), false)
+			if scrollToTask {
+				m.jumpToRenderedLine(m.lineForTaskIndex(i), false)
+			}
 			m.refreshContent()
 			return
 		}

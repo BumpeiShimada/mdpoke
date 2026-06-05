@@ -431,6 +431,46 @@ func TestClickCheckboxTogglesIt(t *testing.T) {
 	}
 }
 
+func TestClickCheckboxDoesNotScrollToIt(t *testing.T) {
+	model, path := taskFixtureModel(t, strings.Repeat("plain line\n", 24)+"- [ ] Pending\n")
+	model.body.Width = 60
+	model.body.Height = 10
+	model.rebuildContent()
+
+	line := lineContaining(model.contentLines, "[ ]")
+	if line < 0 {
+		t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+	}
+	x := strings.Index(model.contentLines[line], "[ ]")
+	if x < 0 {
+		t.Fatalf("checkbox not rendered: %q", model.contentLines[line])
+	}
+	model.body.SetYOffset(line - model.body.Height + 2)
+	beforeOffset := model.body.YOffset
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      line - beforeOffset,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Pending") {
+		t.Fatalf("file was not toggled by click:\n%s", string(data))
+	}
+	if got.body.YOffset != beforeOffset {
+		t.Fatalf("YOffset = %d, want unchanged %d", got.body.YOffset, beforeOffset)
+	}
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want clicked checkbox", got.selectedTask)
+	}
+}
+
 func TestFileWatchReloadsExternalChanges(t *testing.T) {
 	model, path := taskFixtureModel(t, "# First\n")
 	model.body.Width = 80
@@ -2844,7 +2884,7 @@ func BenchmarkToggleTaskLargeDocument(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		model.toggleTask(0)
+		model.toggleTask(0, true)
 	}
 }
 
