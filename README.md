@@ -30,7 +30,7 @@ NB! not sure if the binary for Windows or Linux works yet.
 
 ### Toggle checkboxes with mouse click / Focus with `Tab` -> toggle with `Space` or `Enter`
 
-<img width="1032" height="692" alt="third" src="https://github.com/user-attachments/assets/0b9d23e2-c25d-4e8d-86a3-4f6ed040a7d3" />
+<img width="1032" height="692" alt="check" src="https://github.com/user-attachments/assets/0426fe26-a97d-4d48-979a-aa85c64399fe" />
 
 ### Jump around files with search
 
