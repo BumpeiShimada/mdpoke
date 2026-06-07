@@ -18,7 +18,7 @@ go run ./cmd/mdpoke -- testdata/fixtures/comprehensive.md
 - Confirm every visible `fixture` match is highlighted, while the focused match is more prominent.
 - Confirm focused matches, links, and outline jumps land near the vertical center of the viewport.
 - Press `/TARGET` to confirm case-insensitive search.
-- Press `tab` repeatedly to focus links.
+- Press `tab` repeatedly to focus checkboxes.
 - Press `enter` on [Jump Target](#jump-target).
 - Press `y` on [External Example](https://example.com) to copy the URL.
 - Press `?` and search for `copy`.
@@ -455,3 +455,30 @@ fixture target final line. External reload check: append a `Reload marker` line 
 Source line break check first line
 Source line break check second line without trailing spaces
 Source line break check third line without trailing spaces
+
+## Regression Coverage Additions
+
+This section keeps focused regression cases close to the manual fixture without changing earlier raw line numbers.
+
+### Checkbox And Bullet Combinations
+
+- [ ] fixture-checkbox-with-child-bullets: parent task with plain child bullets
+  - fixture-child-bullet-one: child bullet stays visually separate from the parent task
+  - fixture-child-bullet-two: second child bullet keeps its own rendered line mapping
+- [x] fixture-checkbox-with-child-checkboxes: parent task with nested checkbox items
+  - [ ] fixture-nested-checkbox-pending: nested pending checkbox remains independently focusable
+  - [x] fixture-nested-checkbox-complete: nested completed checkbox remains independently focusable
+- [ ] fixture-long-checkbox-ja: これは幅の狭い端末で複数行に折り返されることを確認するための長いチェックボックス項目です。クリックしても隣の項目に吸い寄せられず、この項目だけが切り替わる必要があります。
+- [ ] fixture-long-checkbox-ja-second: これは同じ接頭辞と似た長さを持つ二つ目の長いチェックボックス項目です。行対応が前の項目に巻き戻らず、この二つ目の項目に対応する必要があります。
+
+### Japanese Wrapping Samples
+
+日本語長文fixture-ja-long-paragraph: これは日本語の長い段落が空白の少ない状態でも自然に折り返され、折り返しマーカーとコピー時の結合が破綻しないことを確認するためのダミーテキストです。かな交じり文と英字fixtureを混ぜ、検索、行対応、表示幅計算が同時に安定することを確認します。
+
+日本語連続文字fixture-ja-unbroken: あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんあいうえおかきくけこさしすせそたちつてと
+
+### Wrapped URL And Copy Samples
+
+- fixture-wrapped-url-line: https://example.com/path/to/日本語リソース名/with/very/long/fixture/url/that/wraps/across/terminal/widths
+- fixture-copy-boundary-list-one: first list item should copy as its own line
+- fixture-copy-boundary-list-two: second list item should not collapse into the previous item

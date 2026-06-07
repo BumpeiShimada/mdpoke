@@ -1,0 +1,207 @@
+mdpoke specification
+====================
+
+This document records the expected behavior derived from the README and the
+closed issue history. It is intentionally written as a checklist so future
+changes can be reviewed against it.
+
+CLI and startup
+---------------
+
+- `mdpoke <markdown-file>` opens a Markdown file in the terminal UI.
+- `--help`, `-h`, and `-help` print usage and exit successfully.
+- `--version` prints `mdpoke <version>` and exits successfully.
+- `--no-watch` disables automatic reloads.
+- `--max-size bytes` sets the Markdown read limit.
+- `--max-size` values less than or equal to zero are rejected.
+- `--follow-symlinks` explicitly allows symlinked Markdown files.
+- Exactly one Markdown file argument is accepted.
+- README command examples use flags supported by the CLI usage text.
+
+Safety and limits
+-----------------
+
+- Markdown input is sanitized before rendering and parsing.
+- ESC, BEL, C0 controls, C1 controls, and DEL are removed from Markdown input.
+- Newlines, tabs, normal Markdown syntax, and printable Unicode are preserved.
+- Terminal control payloads such as CSI and OSC sequences are not emitted from
+  file content.
+- File-derived errors and status text are sanitized before display.
+- Files larger than the configured limit are rejected before reading the whole
+  file.
+- Files exactly at the configured limit are accepted.
+- Symlinks are rejected by default.
+- Symlinks are accepted only when `--follow-symlinks` is set.
+- Automatic reloads keep the same safety checks as the initial load.
+- Automatic reloads reject symlink replacement and oversized replacement files.
+- `--no-watch` prevents watch commands and ignores file watch messages.
+
+Markdown rendering
+------------------
+
+- Headings from H1 through H6 are readable and appear in the outline.
+- Paragraphs, lists, task lists, tables, block quotes, code blocks, images as
+  text, and inline HTML render without breaking the viewer.
+- Indented fenced code blocks keep their border and content aligned.
+- Bullet and numbered list markers do not disappear when the item begins with
+  inline code.
+- Ordered list markers keep spacing after the marker.
+- Nested bullets and nested numbered items preserve visual indentation.
+- Long text without spaces hard-wraps at the available width.
+- Ordinary paragraph soft wraps show the continuation marker `↪`.
+- Block quotes, table cells, task list items, and list item continuations do
+  not receive unnecessary `↪` markers.
+- Outline open and close re-render the document for the new body width.
+- Re-rendering preserves the raw-line anchor at the top of the viewport.
+- Japanese and other wide Unicode text maps to rendered columns correctly.
+
+Outline
+-------
+
+- `o` toggles the outline pane.
+- Right arrow opens the outline pane.
+- Left arrow closes the outline pane.
+- In the outline pane, `j`, `k`, down arrow, and up arrow move the selected
+  heading.
+- Moving the selected outline heading scrolls the main body to that heading.
+- Clicking a heading in the outline selects it and scrolls the main body to it.
+- Mouse wheel scrolls the outline when the pointer is over the outline pane.
+- Long wrapped outline entries keep click and selection mapping correct.
+- Opening the outline does not create a spurious body heading focus.
+- Temporary outline body focus clears after the next normal key.
+
+Search
+------
+
+- `/` opens search mode.
+- Enter applies the current query and returns to normal mode.
+- Esc cancels search mode without applying the query.
+- Matches are case-insensitive.
+- All visible matches are highlighted.
+- The selected match is visually distinct.
+- `n` moves to the next match.
+- `N` moves to the previous match.
+- Moving between matches scrolls the body to the selected match.
+
+Checkboxes
+----------
+
+- `Tab` focuses the next checkbox.
+- `Shift+Tab` focuses the previous checkbox.
+- `Tab` is for checkbox focus, not link focus.
+- When the document has no checkboxes, `Tab` shows a message modal.
+- A focused checkbox toggles with Space.
+- A focused checkbox toggles with Enter.
+- Keyboard toggles scroll the target checkbox into view.
+- Mouse click toggles the clicked checkbox.
+- Mouse click toggles do not auto-scroll the viewport.
+- Release-only mouse click events can toggle a checkbox.
+- A press and release sequence toggles a checkbox only once.
+- Toggling a checkbox updates the rendered view immediately.
+- Toggling a checkbox updates the file stamp used by reload detection.
+- Wrapped checkbox items toggle the matching raw item only.
+- Similar checkbox prefixes do not cause the wrong item to toggle.
+- Checkbox rows containing links still toggle the checkbox when the checkbox
+  itself is clicked.
+- Checkbox rows with child bullets and child checkboxes preserve line mapping.
+
+Links and anchors
+-----------------
+
+- External links can be copied by clicking the rendered link text.
+- The clickable area is the visible link text or URL, not the whole line.
+- Clicking between two links does not select either link.
+- Multiple links on one line are selected by horizontal click position.
+- The longest visible overlapping bare autolink is selected when ranges overlap.
+- Non-ASCII bare URLs are copied through the full URL.
+- Wrapped bare URL continuations remain clickable.
+- Link highlighting matches the URL that will be copied.
+- `y` copies the focused URL.
+- `y` copies the first URL on the current line when no URL is focused.
+- Internal Markdown anchors open a confirmation modal before jumping.
+- Confirming an internal jump scrolls to the target heading.
+- Internal-only links are skipped by URL focus navigation.
+
+Selection and copy
+------------------
+
+- Dragging selects rendered text.
+- Releasing a drag immediately copies the selected text.
+- Drag copy shows a copied modal.
+- The copied modal does not include the copied text or URL body.
+- The selected range remains visible after dismissing the copied modal.
+- The selected range clears on the next normal key or click.
+- Drag selection can be extended with mouse wheel scrolling.
+- Drag selection auto-scrolls near the top and bottom viewport edges.
+- Auto-scroll gets faster closer to the edge.
+- Copy trims renderer padding and visual left margins.
+- Copy trims selection edges and line-end padding.
+- Visual wraps within one raw line copy as one logical line.
+- Raw list item boundaries copy as newlines.
+- Nested bullet and numbered item boundaries copy as newlines.
+- Task list child item boundaries copy as newlines.
+- Wrapped URLs do not gain inserted spaces when copied.
+- Wrapped code block tokens do not gain inserted spaces when copied.
+- Code block bottom borders remain on a separate copied line.
+- Visual continuation markers are not copied as content.
+
+Navigation keys and footer help
+-------------------------------
+
+- `j`, `k`, down arrow, and up arrow scroll the body when the outline is closed.
+- `g` jumps to the top.
+- `G` jumps to the bottom.
+- PageDown and Ctrl+F page down.
+- PageUp and Ctrl+B page up.
+- Mouse wheel scrolls the body when the pointer is over the body.
+- Space does not scroll the body in normal mode.
+- `?` opens the searchable key guide.
+- The README key table and searchable key guide stay synchronized.
+- Esc clears transient focus, highlights, search state, and selection.
+- `q` quits.
+- Ctrl+C quits from normal, modal, search, and help modes.
+
+Modals and UI stability
+-----------------------
+
+- Message and confirmation modals draw aligned rectangular borders.
+- Modal borders remain aligned over styled content.
+- Long modal URLs wrap within the borders.
+- Clicking outside a modal dismisses it.
+- Clicking outside a copied modal preserves the copied selection until the
+  next normal input.
+- Confirmation modal buttons are clickable.
+- The modal overlay does not include a close button.
+- The main view fills the full window height.
+
+Automatic reload
+----------------
+
+- External file changes reload the document.
+- Reload success updates document content and status.
+- Reload failure keeps the current document content.
+- Reload failures show sanitized status text.
+- Automatic reload respects max-size and symlink policy.
+
+Performance expectations
+------------------------
+
+- Outline movement remains practical on large documents.
+- Checkbox focus remains practical on large documents.
+- Checkbox toggle remains practical on large documents.
+- URL hit testing remains practical on large documents.
+- Performance expectations should be tracked with benchmarks rather than
+  brittle wall-clock unit test thresholds.
+
+Known non-unit-test boundaries
+------------------------------
+
+- Actual terminal mouse protocol behavior is approximated with Bubble Tea
+  mouse messages in unit tests.
+- Actual operating system clipboard writes are tested through the clipboard
+  function boundary, not by mutating the user's real clipboard.
+- Alt-screen behavior is part of Bubble Tea program setup and is not asserted
+  with a real terminal in unit tests.
+- Homebrew installation and binary distribution checks belong in release or
+  packaging verification, not ordinary unit tests.
+- Screenshot visual fidelity requires separate visual regression tooling.

@@ -75,6 +75,19 @@ func TestLoadRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsFileAtMaxSize(t *testing.T) {
+	source := "# Title\n\nbody\n"
+	path := writeMarkdownFixture(t, source)
+
+	doc, err := LoadWithOptions(path, LoadOptions{Width: 80, MaxSize: int64(len(source))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Raw != source {
+		t.Fatalf("doc.Raw = %q, want %q", doc.Raw, source)
+	}
+}
+
 func TestLoadRejectsSymlinkByDefault(t *testing.T) {
 	target := writeMarkdownFixture(t, "# Target\n")
 	link := target + ".link"

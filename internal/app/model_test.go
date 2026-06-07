@@ -319,6 +319,44 @@ func TestTabWithoutCheckboxesShowsMessage(t *testing.T) {
 	}
 }
 
+func TestReadmeKeyTableMatchesSearchableHelp(t *testing.T) {
+	data, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readmeKeys := readmeKeyTableKeys(t, string(data))
+	helpKeys := make(map[string]bool)
+	for _, item := range helpItems() {
+		for _, key := range splitReadmeKeyCell(item.Key) {
+			helpKeys[normalizeReadmeKey(key)] = true
+		}
+	}
+
+	for _, cell := range readmeKeys {
+		for _, key := range splitReadmeKeyCell(cell) {
+			normalized := normalizeReadmeKey(key)
+			if !helpKeys[normalized] {
+				t.Fatalf("README key %q from cell %q is missing from searchable help; help keys=%v", normalized, cell, helpKeys)
+			}
+		}
+	}
+}
+
+func TestTabFocusesCheckboxInsteadOfLink(t *testing.T) {
+	source := "Read [docs](https://example.com/docs) first\n- [ ] Pending\n"
+	model, _ := taskFixtureModel(t, source)
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+	got := next.(Model)
+
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want first checkbox", got.selectedTask)
+	}
+	if got.selectedLink != -1 {
+		t.Fatalf("selectedLink = %d, want no focused link from tab", got.selectedLink)
+	}
+}
+
 func TestTabAndSpaceToggleCheckboxAndUpdateFile(t *testing.T) {
 	model, path := taskFixtureModel(t, "- [ ] Pending\n- [x] Done\n")
 	oldTaskFocusStyle := taskFocusStyle
@@ -431,6 +469,84 @@ func TestClickCheckboxTogglesIt(t *testing.T) {
 	}
 }
 
+func TestReleaseOnlyCheckboxClickTogglesIt(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n")
+	model.body.Width = 60
+	model.body.Height = 10
+	line := lineContaining(model.contentLines, "[ ]")
+	if line < 0 {
+		t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+	}
+	x := strings.Index(model.contentLines[line], "[ ]")
+	if x < 0 {
+		t.Fatalf("checkbox not rendered: %q", model.contentLines[line])
+	}
+	model.body.SetYOffset(line)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Pending") {
+		t.Fatalf("file was not toggled by release-only click:\n%s", string(data))
+	}
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want clicked checkbox", got.selectedTask)
+	}
+}
+
+func TestCheckboxPressReleaseTogglesOnlyOnce(t *testing.T) {
+	model, path := taskFixtureModel(t, "- [ ] Pending\n")
+	model.body.Width = 60
+	model.body.Height = 10
+	line := lineContaining(model.contentLines, "[ ]")
+	if line < 0 {
+		t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+	}
+	x := strings.Index(model.contentLines[line], "[ ]")
+	if x < 0 {
+		t.Fatalf("checkbox not rendered: %q", model.contentLines[line])
+	}
+	model.body.SetYOffset(line)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "- [x] Pending") {
+		t.Fatalf("checkbox should stay checked after press+release:\n%s", text)
+	}
+	if strings.Contains(text, "- [ ] Pending") {
+		t.Fatalf("checkbox toggled twice after press+release:\n%s", text)
+	}
+	if got.selectedTask != 0 {
+		t.Fatalf("selectedTask = %d, want clicked checkbox", got.selectedTask)
+	}
+}
+
 func TestClickCheckboxDoesNotScrollToIt(t *testing.T) {
 	model, path := taskFixtureModel(t, strings.Repeat("plain line\n", 24)+"- [ ] Pending\n")
 	model.body.Width = 60
@@ -468,6 +584,48 @@ func TestClickCheckboxDoesNotScrollToIt(t *testing.T) {
 	}
 	if got.selectedTask != 0 {
 		t.Fatalf("selectedTask = %d, want clicked checkbox", got.selectedTask)
+	}
+}
+
+func TestClickCheckboxOnLinkedTaskDoesNotCopyURL(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	source := "- [ ] Read [docs](https://example.com/docs) before continuing\n"
+	model, path := taskFixtureModel(t, source)
+	checkboxLine := model.lineForRaw(1)
+	start, _, ok := taskCheckboxColumns(model.contentLines[checkboxLine])
+	if !ok {
+		t.Fatalf("checkbox columns not found in %q", model.contentLines[checkboxLine])
+	}
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      start,
+		Y:      checkboxLine,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	if copied != "" {
+		t.Fatalf("copied = %q, want no URL copy from checkbox click", copied)
+	}
+	if got.modalKind != modalNone {
+		t.Fatalf("modalKind = %d, want no copied modal", got.modalKind)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] Read [docs](https://example.com/docs)") {
+		t.Fatalf("checkbox click did not toggle linked task:\n%s", string(data))
 	}
 }
 
@@ -588,6 +746,70 @@ func TestClickWrappedCheckboxesToggleOnlyClickedTask(t *testing.T) {
 				t.Fatalf("visible content did not show clicked task checked:\n%s", md.StripANSI(got.body.View()))
 			}
 		})
+	}
+}
+
+func TestClickSplitCheckboxLineTogglesMatchingRawTask(t *testing.T) {
+	source := strings.Join([]string{
+		"- [ ] 共通接頭辞のチェック項目その一として長い長い説明文を置く",
+		"- [ ] 共通接頭辞のチェック項目その二として長い長い説明文を置く",
+		"- [ ] 共通接頭辞のチェック項目その三として長い長い説明文を置く",
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "tasks.md")
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	model := markdownModelAtWidth(t, source, 26)
+	model.doc.Path = path
+
+	targetRaw := 2
+	checkboxLine := model.lineForRaw(targetRaw)
+	if checkboxLine < 0 || checkboxLine >= len(model.contentLines) {
+		t.Fatalf("lineForRaw(%d) = %d outside content", targetRaw, checkboxLine)
+	}
+	if !strings.Contains(model.contentLines[checkboxLine], "[ ]") {
+		t.Fatalf("target raw line does not start on checkbox line: %q", model.contentLines[checkboxLine])
+	}
+	if strings.Contains(model.contentLines[checkboxLine], "その二") {
+		t.Fatalf("test fixture did not split checkbox and text: %q", model.contentLines[checkboxLine])
+	}
+	foundTextContinuation := false
+	for line := checkboxLine + 1; line < len(model.contentLines) && model.rawLineForRendered(line) == targetRaw; line++ {
+		if strings.Contains(model.contentLines[line], "その二") {
+			foundTextContinuation = true
+			break
+		}
+	}
+	if !foundTextContinuation {
+		t.Fatalf("target raw line text continuation not found near line %d with raw map %#v:\n%s", checkboxLine, model.rawToRendered, strings.Join(model.contentLines, "\n"))
+	}
+	start, _, ok := taskCheckboxColumns(model.contentLines[checkboxLine])
+	if !ok {
+		t.Fatalf("checkbox columns not found in %q", model.contentLines[checkboxLine])
+	}
+	model.body.SetYOffset(checkboxLine)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      start,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "- [x] 共通接頭辞のチェック項目その二") {
+		t.Fatalf("split checkbox click toggled the wrong task:\n%s", text)
+	}
+	if strings.Count(text, "- [x]") != 1 {
+		t.Fatalf("unexpected checked task count after split click:\n%s", text)
+	}
+	if !strings.Contains(md.StripANSI(got.body.View()), "[x]") {
+		t.Fatalf("visible split checkbox did not refresh:\n%s", md.StripANSI(got.body.View()))
 	}
 }
 
@@ -731,6 +953,63 @@ func TestCheckboxToggleRefreshesFileStamp(t *testing.T) {
 	}
 }
 
+func TestReadmeQuitKeysReturnQuitCommand(t *testing.T) {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		{Type: tea.KeyCtrlC},
+	} {
+		t.Run(key.String(), func(t *testing.T) {
+			model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+
+			_, cmd := model.Update(key)
+
+			assertQuitCommand(t, cmd)
+		})
+	}
+}
+
+func TestReadmeCtrlCQuitsFromModalSearchAndHelp(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+	}{
+		{
+			name: "modal",
+			model: func() Model {
+				model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+				model.modalKind = modalMessage
+				model.modalTitle = "Message"
+				model.modalBody = "body"
+				return model
+			}(),
+		},
+		{
+			name: "search",
+			model: func() Model {
+				model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+				model.mode = modeSearch
+				return model
+			}(),
+		},
+		{
+			name: "help",
+			model: func() Model {
+				model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+				model.mode = modeHelp
+				return model
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, cmd := tt.model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+			assertQuitCommand(t, cmd)
+		})
+	}
+}
+
 func TestEscExitsURLFocus(t *testing.T) {
 	model := New(md.Document{
 		Rendered: "External alpha\nJump Target\n",
@@ -771,6 +1050,377 @@ func TestEscExitsURLFocus(t *testing.T) {
 	items := strings.Join(got.guideItems(), " ")
 	if !strings.Contains(items, "o outline") || strings.Contains(items, "n next") || strings.Contains(items, "esc exit") {
 		t.Fatalf("guide items = %q, want initial actions", items)
+	}
+}
+
+func TestReadmeHelpKeyOpensSearchableGuideAndEscCloses(t *testing.T) {
+	model := New(md.Document{Rendered: "body\n", Raw: "body\n"})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	model = next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	opened := next.(Model)
+	if opened.mode != modeHelp {
+		t.Fatalf("mode = %v, want help", opened.mode)
+	}
+	if !strings.Contains(md.StripANSI(opened.View()), "mdpoke keys") {
+		t.Fatalf("help view missing title:\n%s", md.StripANSI(opened.View()))
+	}
+
+	next, _ = opened.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	filtered := next.(Model)
+	view := md.StripANSI(filtered.View())
+	if !strings.Contains(view, "copy") {
+		t.Fatalf("filtered help missing copy entry:\n%s", view)
+	}
+	if strings.Contains(view, "outline") {
+		t.Fatalf("filtered help should not show unrelated outline entry:\n%s", view)
+	}
+
+	next, _ = filtered.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	closed := next.(Model)
+	if closed.mode != modeNormal {
+		t.Fatalf("mode = %v, want normal after esc", closed.mode)
+	}
+}
+
+func TestReadmeSearchFlowFindsAndNavigatesMatches(t *testing.T) {
+	model := New(md.Document{
+		Rendered: "alpha\nTARGET one\nbeta\ntarget two\n",
+		Raw:      "alpha\nTARGET one\nbeta\ntarget two\n",
+	})
+	model.body.Height = 3
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	searching := next.(Model)
+	if searching.mode != modeSearch {
+		t.Fatalf("mode = %v, want search", searching.mode)
+	}
+	for _, r := range "target" {
+		next, _ = searching.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		searching = next.(Model)
+	}
+	next, _ = searching.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	found := next.(Model)
+
+	if found.mode != modeNormal {
+		t.Fatalf("mode = %v, want normal after enter", found.mode)
+	}
+	if len(found.searchMatches) != 2 {
+		t.Fatalf("matches = %d, want 2", len(found.searchMatches))
+	}
+	if found.selectedMatch != 0 {
+		t.Fatalf("selectedMatch = %d, want first match", found.selectedMatch)
+	}
+	if gotLine := found.searchMatches[found.selectedMatch].Line; gotLine != 1 {
+		t.Fatalf("selected match line = %d, want 1", gotLine)
+	}
+
+	next, _ = found.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	nextMatch := next.(Model)
+	if nextMatch.selectedMatch != 1 {
+		t.Fatalf("selectedMatch after n = %d, want second match", nextMatch.selectedMatch)
+	}
+	if gotLine := nextMatch.searchMatches[nextMatch.selectedMatch].Line; gotLine != 3 {
+		t.Fatalf("selected match line after n = %d, want 3", gotLine)
+	}
+
+	next, _ = nextMatch.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})
+	previousMatch := next.(Model)
+	if previousMatch.selectedMatch != 0 {
+		t.Fatalf("selectedMatch after N = %d, want first match", previousMatch.selectedMatch)
+	}
+}
+
+func TestReadmeEscCancelsSearchWithoutApplyingQuery(t *testing.T) {
+	model := New(md.Document{
+		Rendered: "alpha\ntarget\n",
+		Raw:      "alpha\ntarget\n",
+	})
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	searching := next.(Model)
+	next, _ = searching.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	searching = next.(Model)
+	next, _ = searching.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+
+	if got.mode != modeNormal {
+		t.Fatalf("mode = %v, want normal after esc", got.mode)
+	}
+	if got.searchQuery != "" || len(got.searchMatches) != 0 || got.selectedMatch != -1 {
+		t.Fatalf("search state was applied despite esc: query=%q matches=%d selected=%d", got.searchQuery, len(got.searchMatches), got.selectedMatch)
+	}
+}
+
+func TestReadmeNormalNavigationKeysScrollBody(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %02d", i+1)
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{Rendered: text, Raw: text})
+	model.body.Height = 5
+	model.rebuildContent()
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got := next.(Model)
+	if got.body.YOffset != 1 {
+		t.Fatalf("YOffset after j = %d, want 1", got.body.YOffset)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(Model)
+	if got.body.YOffset != 2 {
+		t.Fatalf("YOffset after down = %d, want 2", got.body.YOffset)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	got = next.(Model)
+	if got.body.YOffset != 1 {
+		t.Fatalf("YOffset after k = %d, want 1", got.body.YOffset)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got = next.(Model)
+	if got.body.YOffset != 0 {
+		t.Fatalf("YOffset after up = %d, want 0", got.body.YOffset)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	got = next.(Model)
+	if got.body.YOffset == 0 {
+		t.Fatal("expected G to jump to bottom")
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	got = next.(Model)
+	if got.body.YOffset != 0 {
+		t.Fatalf("YOffset after g = %d, want 0", got.body.YOffset)
+	}
+}
+
+func TestReadmePageNavigationKeysScrollBody(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %02d", i+1)
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{Rendered: text, Raw: text})
+	model.body.Height = 6
+	model.rebuildContent()
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyPgDown},
+		{Type: tea.KeyCtrlF},
+	} {
+		t.Run(key.String(), func(t *testing.T) {
+			next, _ := model.Update(key)
+			got := next.(Model)
+			if got.body.YOffset <= 0 {
+				t.Fatalf("YOffset after %s = %d, want scrolled down", key.String(), got.body.YOffset)
+			}
+		})
+	}
+
+	model.body.GotoBottom()
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyPgUp},
+		{Type: tea.KeyCtrlB},
+	} {
+		t.Run(key.String(), func(t *testing.T) {
+			next, _ := model.Update(key)
+			got := next.(Model)
+			if got.body.YOffset >= model.body.YOffset {
+				t.Fatalf("YOffset after %s = %d, want less than %d", key.String(), got.body.YOffset, model.body.YOffset)
+			}
+		})
+	}
+}
+
+func TestReadmeMouseWheelScrollsBody(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %02d", i+1)
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{Rendered: text, Raw: text})
+	model.body.Height = 5
+	model.body.Width = 40
+	model.body.MouseWheelDelta = 3
+	model.rebuildContent()
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      1,
+		Y:      1,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	}))
+	got := next.(Model)
+	if got.body.YOffset != 3 {
+		t.Fatalf("YOffset after wheel down = %d, want 3", got.body.YOffset)
+	}
+
+	next, _ = got.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      1,
+		Y:      1,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	}))
+	got = next.(Model)
+	if got.body.YOffset != 0 {
+		t.Fatalf("YOffset after wheel up = %d, want 0", got.body.YOffset)
+	}
+}
+
+func TestReadmeMouseWheelScrollsOutlinePane(t *testing.T) {
+	headings := make([]string, 18)
+	for i := range headings {
+		headings[i] = fmt.Sprintf("## Heading %02d\nbody", i+1)
+	}
+	raw := "# Root\n\n" + strings.Join(headings, "\n\n") + "\n"
+	rendered, err := md.Render(raw, 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	model.width = 100
+	model.height = 8
+	model.ready = true
+	model.resize()
+	model.toggleOutline()
+	model.outline.MouseWheelDelta = 2
+	model.outline.Height = 4
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      model.body.Width + 2,
+		Y:      1,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	}))
+	got := next.(Model)
+	if got.outline.YOffset != 2 {
+		t.Fatalf("outline YOffset after wheel down = %d, want 2", got.outline.YOffset)
+	}
+	if got.body.YOffset != model.body.YOffset {
+		t.Fatalf("body YOffset changed from %d to %d while scrolling outline", model.body.YOffset, got.body.YOffset)
+	}
+}
+
+func TestReadmeArrowKeysOpenAndCloseOutline(t *testing.T) {
+	raw := "# Root\n\n## Second\nbody\n"
+	rendered, err := md.Render(raw, 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	model.width = 80
+	model.height = 10
+	model.ready = true
+	model.resize()
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	opened := next.(Model)
+	if !opened.outlineVisible {
+		t.Fatal("outlineVisible = false after right, want open")
+	}
+
+	next, _ = opened.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	closed := next.(Model)
+	if closed.outlineVisible {
+		t.Fatal("outlineVisible = true after left, want closed")
+	}
+}
+
+func TestReadmeOutlineNavigationKeysSelectAndScrollToHeadings(t *testing.T) {
+	raw := strings.Join([]string{
+		"# Root",
+		"",
+		strings.Repeat("alpha ", 20),
+		"",
+		"## Second",
+		"second body",
+		"",
+		"## Third",
+		"third body",
+	}, "\n") + "\n"
+	rendered, err := md.Render(raw, 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	model.width = 80
+	model.height = 8
+	model.ready = true
+	model.resize()
+	model.toggleOutline()
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	second := next.(Model)
+	if second.selectedOutline != 1 {
+		t.Fatalf("selectedOutline after j = %d, want second heading", second.selectedOutline)
+	}
+	if topRaw := second.rawLineForRendered(second.body.YOffset); topRaw > outline[1].Line {
+		t.Fatalf("body top raw line = %d, want at or before selected heading raw %d", topRaw, outline[1].Line)
+	}
+
+	next, _ = second.Update(tea.KeyMsg{Type: tea.KeyDown})
+	third := next.(Model)
+	if third.selectedOutline != 2 {
+		t.Fatalf("selectedOutline after down = %d, want third heading", third.selectedOutline)
+	}
+	if topRaw := third.rawLineForRendered(third.body.YOffset); topRaw > outline[2].Line {
+		t.Fatalf("body top raw line = %d, want at or before selected heading raw %d", topRaw, outline[2].Line)
+	}
+
+	next, _ = third.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	backToSecond := next.(Model)
+	if backToSecond.selectedOutline != 1 {
+		t.Fatalf("selectedOutline after k = %d, want second heading", backToSecond.selectedOutline)
+	}
+
+	next, _ = backToSecond.Update(tea.KeyMsg{Type: tea.KeyUp})
+	backToRoot := next.(Model)
+	if backToRoot.selectedOutline != 0 {
+		t.Fatalf("selectedOutline after up = %d, want root heading", backToRoot.selectedOutline)
+	}
+}
+
+func TestReadmeYCopiesFirstLinkOnCurrentLine(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Rendered: "first link and second link\n",
+		Raw:      "[first](https://example.com/first) link and [second](https://example.com/second) link\n",
+		Links: []md.Link{
+			{Text: "first", URL: "https://example.com/first", Line: 1},
+			{Text: "second", URL: "https://example.com/second", Line: 1},
+		},
+	})
+	model.body.SetYOffset(0)
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	got := next.(Model)
+
+	if copied != "https://example.com/first" {
+		t.Fatalf("copied = %q, want first current-line URL", copied)
+	}
+	if got.modalKind != modalMessage {
+		t.Fatalf("modalKind = %d, want copied message", got.modalKind)
 	}
 }
 
@@ -1041,6 +1691,34 @@ func TestToggleOutlinePreservesTopRawLineAfterRewrap(t *testing.T) {
 	}
 	if got.body.YOffset != got.lineForRaw(5) {
 		t.Fatalf("YOffset = %d, want remapped target %d", got.body.YOffset, got.lineForRaw(5))
+	}
+}
+
+func TestToggleOutlineRewrapsUnbrokenTextWithContinuationMarker(t *testing.T) {
+	raw := "# Root\n\n" + strings.Repeat("abcdef", 24) + "\n"
+	model := markdownModelAtWidth(t, raw, 78)
+	model.width = 80
+	model.height = 10
+	model.ready = true
+	model.resize()
+
+	if !strings.Contains(strings.Join(model.contentLines, "\n"), "↪") {
+		t.Fatalf("expected unbroken text to wrap before outline toggle:\n%s", strings.Join(model.contentLines, "\n"))
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	got := next.(Model)
+
+	if !got.outlineVisible {
+		t.Fatal("outlineVisible = false, want open")
+	}
+	if !strings.Contains(strings.Join(got.contentLines, "\n"), "↪") {
+		t.Fatalf("expected unbroken text to rewrap after outline toggle:\n%s", strings.Join(got.contentLines, "\n"))
+	}
+	for _, line := range got.contentLines {
+		if lipgloss.Width(line) > got.body.Width {
+			t.Fatalf("line width = %d, want <= body width %d for %q", lipgloss.Width(line), got.body.Width, line)
+		}
 	}
 }
 
@@ -1690,6 +2368,59 @@ func TestClickWrappedBareURLContinuationCopiesFullURL(t *testing.T) {
 	}
 }
 
+func TestClickRenderedWrappedBareURLContinuationCopiesFullURL(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	url := "https://example.com/path/to/日本語リソース名"
+	source := "こちらがURL: " + url + "\n"
+	model := markdownModelAtWidth(t, source, 36)
+	model.body.Width = 36
+	model.body.Height = 8
+
+	clickLine := -1
+	clickX := 0
+	for line, renderedLine := range model.contentLines {
+		if strings.Contains(renderedLine, "日本語") {
+			clickLine = line
+			clickX = lipgloss.Width(renderedLine[:strings.Index(renderedLine, "日本語")])
+			break
+		}
+	}
+	if clickLine < 0 {
+		t.Fatalf("wrapped URL continuation not found:\n%s", strings.Join(model.contentLines, "\n"))
+	}
+	model.body.SetYOffset(clickLine)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      clickX,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      clickX,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	if copied != url {
+		t.Fatalf("copied = %q, want %q", copied, url)
+	}
+	if got.modalKind != modalMessage {
+		t.Fatalf("modalKind = %d, want copied message", got.modalKind)
+	}
+}
+
 func TestClickFixtureAutolinkCopiesURL(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
@@ -2216,6 +2947,129 @@ func TestSelectedTaskListPreservesChildItemBreaks(t *testing.T) {
 	}
 }
 
+func TestMixedListRegressionKeepsRawLineMapAndWrapMarkers(t *testing.T) {
+	source := strings.Join([]string{
+		"### ダミー混在セクション",
+		"",
+		"- [ ] 共通接頭辞タスクその一として長い説明文を置く",
+		"  - 補足説明: 共通接頭辞の子要素その一として長い説明文を置く",
+		"- [x] 共通接頭辞タスクその二として長い説明文を置く",
+		"  - 補足説明: 共通接頭辞の子要素その二として長い説明文を置く",
+		"- 共通接頭辞の通常箇条書きその一として長い説明文を置く",
+		"  - 共通接頭辞の通常箇条書きその二として長い説明文を置く",
+		"",
+		"これは普通の長い段落として視覚上の折り返しマーカーが必要になるだけの説明文をここに置く。",
+	}, "\n") + "\n"
+	model := markdownModelAtWidth(t, source, 42)
+
+	tests := []struct {
+		raw  int
+		want string
+	}{
+		{raw: 3, want: "[ ]"},
+		{raw: 4, want: "•"},
+		{raw: 5, want: "[x]"},
+		{raw: 6, want: "•"},
+		{raw: 7, want: "•"},
+		{raw: 8, want: "•"},
+	}
+	seen := make(map[int]int)
+	for _, tt := range tests {
+		line := model.lineForRaw(tt.raw)
+		if gotRaw := model.rawLineForRendered(line); gotRaw != tt.raw {
+			t.Fatalf("raw %d maps to rendered line %d with raw %d", tt.raw, line, gotRaw)
+		}
+		if !strings.Contains(model.contentLines[line], tt.want) {
+			t.Fatalf("raw %d rendered line = %q, want marker %q", tt.raw, model.contentLines[line], tt.want)
+		}
+		if previousRaw, exists := seen[line]; exists {
+			t.Fatalf("raw %d and raw %d map to the same rendered line %d", previousRaw, tt.raw, line)
+		}
+		seen[line] = tt.raw
+		for renderedLine := line; renderedLine <= lastRenderedLineForRaw(model, tt.raw); renderedLine++ {
+			if strings.Contains(model.contentLines[renderedLine], "↪ [") || strings.Contains(model.contentLines[renderedLine], "↪ •") {
+				t.Fatalf("raw %d rendered line %d has list continuation marker: %q", tt.raw, renderedLine, model.contentLines[renderedLine])
+			}
+		}
+	}
+
+	paragraphLine := model.lineForRaw(10)
+	foundParagraphMarker := false
+	for line := paragraphLine + 1; line <= lastRenderedLineForRaw(model, 10); line++ {
+		if strings.Contains(model.contentLines[line], "↪") {
+			foundParagraphMarker = true
+			break
+		}
+	}
+	if !foundParagraphMarker {
+		t.Fatalf("expected ordinary paragraph raw line 10 to keep visible continuation marker:\n%s", strings.Join(model.contentLines, "\n"))
+	}
+}
+
+func TestComprehensiveFixtureCoversTaskBulletAndJapaneseRegressionCases(t *testing.T) {
+	model, _ := fixtureModelAtWidth(t, 42)
+	firstTaskRaw := rawLineContaining(t, model.doc.Raw, "fixture-long-checkbox-ja:")
+	secondTaskRaw := rawLineContaining(t, model.doc.Raw, "fixture-long-checkbox-ja-second:")
+	childBulletRaw := rawLineContaining(t, model.doc.Raw, "fixture-child-bullet-one:")
+	nestedTaskRaw := rawLineContaining(t, model.doc.Raw, "fixture-nested-checkbox-pending:")
+	japaneseParagraphRaw := rawLineContaining(t, model.doc.Raw, "fixture-ja-long-paragraph:")
+	japaneseUnbrokenRaw := rawLineContaining(t, model.doc.Raw, "fixture-ja-unbroken:")
+	wrappedURLRaw := rawLineContaining(t, model.doc.Raw, "fixture-wrapped-url-line:")
+
+	firstTaskLine := model.lineForRaw(firstTaskRaw)
+	secondTaskLine := model.lineForRaw(secondTaskRaw)
+	if firstTaskLine == secondTaskLine {
+		t.Fatalf("long checkbox raw lines map to the same rendered line: first=%d second=%d", firstTaskLine, secondTaskLine)
+	}
+	for _, tt := range []struct {
+		name string
+		raw  int
+		want string
+	}{
+		{name: "first long checkbox", raw: firstTaskRaw, want: "[ ]"},
+		{name: "second long checkbox", raw: secondTaskRaw, want: "[ ]"},
+		{name: "child bullet", raw: childBulletRaw, want: "•"},
+		{name: "nested checkbox", raw: nestedTaskRaw, want: "[ ]"},
+		{name: "wrapped URL list item", raw: wrappedURLRaw, want: "•"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			line := model.lineForRaw(tt.raw)
+			if gotRaw := model.rawLineForRendered(line); gotRaw != tt.raw {
+				t.Fatalf("raw %d maps to rendered line %d with raw %d", tt.raw, line, gotRaw)
+			}
+			if !strings.Contains(model.contentLines[line], tt.want) {
+				t.Fatalf("raw %d rendered line = %q, want marker %q", tt.raw, model.contentLines[line], tt.want)
+			}
+			for renderedLine := line; renderedLine <= lastRenderedLineForRaw(model, tt.raw); renderedLine++ {
+				if strings.Contains(model.contentLines[renderedLine], "↪ [") || strings.Contains(model.contentLines[renderedLine], "↪ •") {
+					t.Fatalf("raw %d rendered line %d has list continuation marker: %q", tt.raw, renderedLine, model.contentLines[renderedLine])
+				}
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		raw  int
+	}{
+		{name: "Japanese paragraph", raw: japaneseParagraphRaw},
+		{name: "Japanese unbroken text", raw: japaneseUnbrokenRaw},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			foundMarker := false
+			for line := model.lineForRaw(tt.raw) + 1; line <= lastRenderedLineForRaw(model, tt.raw); line++ {
+				if strings.Contains(model.contentLines[line], "↪") {
+					foundMarker = true
+					break
+				}
+			}
+			if !foundMarker {
+				t.Fatalf("%s raw line %d did not show a continuation marker:\n%s", tt.name, tt.raw, strings.Join(model.contentLines, "\n"))
+			}
+		})
+	}
+}
+
 func TestSelectedExternalLinksKeepsWrappedURLContinuous(t *testing.T) {
 	model, _ := fixtureModelAtWidth(t, 58)
 	startLine := model.lineForRaw(68)
@@ -2572,6 +3426,74 @@ func TestCopiedDragSelectionSurvivesOutsideClickDismiss(t *testing.T) {
 	}
 }
 
+func TestCopiedDragSelectionClearsOnNextClickAfterDismiss(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	clipboardWrite = func(text string) error {
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Rendered: "alpha\nbeta\n",
+		Raw:      "alpha\nbeta\n",
+	})
+	model.width = 80
+	model.height = 20
+	model.body.Width = 40
+	model.body.Height = 10
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      4,
+		Y:      1,
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      4,
+		Y:      1,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	copiedModel := next.(Model)
+
+	next, _ = copiedModel.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	dismissed := next.(Model)
+	next, _ = dismissed.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      0,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	afterDismissRelease := next.(Model)
+	if !afterDismissRelease.hasLineSelection() {
+		t.Fatal("expected dismiss click release not to clear copied selection")
+	}
+
+	next, _ = afterDismissRelease.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      1,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+	if got.hasLineSelection() {
+		t.Fatal("expected next normal click to clear copied selection")
+	}
+}
+
 func TestYCopyFocusedLinkShowsCopiedModal(t *testing.T) {
 	oldClipboardWrite := clipboardWrite
 	var copied string
@@ -2921,6 +3843,25 @@ func fixtureModelAtWidth(t *testing.T, width int) (Model, []md.Heading) {
 	return model, outline
 }
 
+func markdownModelAtWidth(t *testing.T, source string, width int) Model {
+	t.Helper()
+	rendered, err := md.Render(source, width)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(source))
+	model := New(md.Document{
+		Raw:      source,
+		Rendered: rendered,
+		Outline:  outline,
+		Links:    links,
+	})
+	model.body.Width = width
+	model.body.Height = 12
+	model.rebuildContent()
+	return model
+}
+
 func taskFixtureModel(t *testing.T, source string) (Model, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tasks.md")
@@ -2952,6 +3893,87 @@ func lineContaining(lines []string, needle string) int {
 		}
 	}
 	return -1
+}
+
+func rawLineContaining(t *testing.T, raw, needle string) int {
+	t.Helper()
+	for i, line := range strings.Split(raw, "\n") {
+		if strings.Contains(line, needle) {
+			return i + 1
+		}
+	}
+	t.Fatalf("raw line containing %q not found", needle)
+	return 0
+}
+
+func readmeKeyTableKeys(t *testing.T, readme string) []string {
+	t.Helper()
+	lines := strings.Split(readme, "\n")
+	inKeys := false
+	keys := make([]string, 0)
+	for _, line := range lines {
+		switch {
+		case strings.TrimSpace(line) == "## Keys":
+			inKeys = true
+			continue
+		case inKeys && strings.HasPrefix(line, "## "):
+			inKeys = false
+		}
+		if !inKeys || !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(cells[1])
+		if key == "Key" || strings.Trim(key, " -") == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		t.Fatal("README key table was not found")
+	}
+	return keys
+}
+
+func splitReadmeKeyCell(cell string) []string {
+	cell = strings.ReplaceAll(cell, "`", "")
+	parts := strings.FieldsFunc(cell, func(r rune) bool {
+		return r == ',' || r == '/'
+	})
+	keys := make([]string, 0, len(parts))
+	for _, part := range parts {
+		key := strings.TrimSpace(part)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func normalizeReadmeKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.Join(strings.Fields(key), " ")
+	switch key {
+	case "arrow keys":
+		return "arrows"
+	case "ctrl+c":
+		return "ctrl+c"
+	}
+	return key
+}
+
+func assertQuitCommand(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected quit command, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("command returned %T, want tea.QuitMsg", msg)
+	}
 }
 
 func headingLine(outline []md.Heading, text string) int {

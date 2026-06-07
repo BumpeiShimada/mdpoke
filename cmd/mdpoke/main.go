@@ -15,7 +15,7 @@ import (
 )
 
 const usage = `Usage:
-  mdpoke [--version] [--no-watch] [--max-size bytes] [--follow-symlinks] <markdown-file>
+  mdpoke [--help] [--version] [--no-watch] [--max-size bytes] [--follow-symlinks] <markdown-file>
 
 mdpoke is a terminal Markdown viewer.
 `

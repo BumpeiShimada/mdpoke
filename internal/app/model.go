@@ -148,6 +148,8 @@ type Model struct {
 	textSelectionAutoScrollActive bool
 	clearSelectionOnInput         bool
 	ignoreModalRelease            bool
+	leftMousePressActive          bool
+	leftMousePressToggledTask     bool
 }
 
 func New(doc md.Document) Model {
@@ -253,12 +255,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ignoreModalRelease = false
 			return m, nil
 		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.leftMousePressActive = true
+			m.leftMousePressToggledTask = false
+		}
 		if msg.Action == tea.MouseActionPress {
 			m.clearDeferredLineSelection()
 		}
 		if m.textSelectionAnchor.valid() {
 			handled, selectionCmd := m.updateLineSelectionMouse(msg)
 			if handled {
+				if isMouseRelease(msg) {
+					m.clearLeftMousePressState()
+				}
 				return m, selectionCmd
 			}
 		}
@@ -267,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.toggleTaskAtMouse(msg) {
+				m.leftMousePressToggledTask = true
 				return m, nil
 			}
 			if m.beginLineSelection(msg) {
@@ -274,6 +284,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if isMouseRelease(msg) {
+			releaseOnly := !m.leftMousePressActive
+			if m.leftMousePressToggledTask {
+				m.clearLeftMousePressState()
+				return m, nil
+			}
+			m.clearLeftMousePressState()
+			if releaseOnly && msg.Button == tea.MouseButtonLeft && m.toggleTaskAtMouse(msg) {
+				return m, nil
+			}
 			m.clearLineSelection()
 			m.focusLinkAtMouse(msg)
 			return m, nil
@@ -291,6 +310,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.body, cmd = m.body.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) clearLeftMousePressState() {
+	m.leftMousePressActive = false
+	m.leftMousePressToggledTask = false
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2693,28 +2717,40 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 	}
 
 	cursor := 0
+	lastContentCursor := -1
 	for i, rawLine := range rawLines {
 		rawNumber := i + 1
 		key := normalizeMarkdownLine(rawLine)
 		taskMarker, taskKey, taskOK := taskLineMapParts(rawLine)
 		listMarker, listKey, listOK := listLineMapParts(rawLine)
 		if len(rendered) > 0 && (key != "" || taskOK) {
+			searchCursor := cursor
+			if lastContentCursor >= 0 && cursor == lastContentCursor && cursor+1 < len(rendered) {
+				searchCursor = cursor + 1
+			}
 			if taskOK {
-				if line, ok := findRenderedTaskLine(lowerRendered, strings.ToLower(taskMarker), strings.ToLower(taskKey), cursor); ok {
+				if line, ok := findRenderedTaskLine(lowerRendered, strings.ToLower(taskMarker), strings.ToLower(taskKey), searchCursor); ok {
 					cursor = line
 				} else if key != "" {
-					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), searchCursor)
+					if line, ok := precedingRenderedTaskMarkerLine(lowerRendered, strings.ToLower(taskMarker), cursor); ok {
+						cursor = line
+					}
 				}
 			} else if listOK {
-				if line, ok := findRenderedListLine(lowerRendered, strings.ToLower(listMarker), strings.ToLower(listKey), cursor); ok {
+				if line, ok := findRenderedListLine(lowerRendered, strings.ToLower(listMarker), strings.ToLower(listKey), searchCursor); ok {
 					cursor = line
 				} else if key != "" {
-					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), searchCursor)
+					if line, ok := precedingRenderedListMarkerLine(lowerRendered, strings.ToLower(listMarker), cursor); ok {
+						cursor = line
+					}
 				}
 			} else {
-				cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+				cursor = findRenderedLine(lowerRendered, strings.ToLower(key), searchCursor)
 			}
 			rawHasRenderedContent[rawNumber] = true
+			lastContentCursor = cursor
 		}
 		rawToRendered[rawNumber] = cursor
 	}
@@ -2765,24 +2801,20 @@ func findRenderedListLine(rendered []string, marker, textKey string, cursor int)
 
 	start := clamp(cursor, 0, len(rendered)-1)
 	if textKey != "" {
-		for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
-			for line := bounds[0]; line < bounds[1]; line++ {
-				if !renderedLineHasListMarker(rendered[line], marker) {
-					continue
-				}
-				if renderedListWindowContainsText(rendered, line, textKey) {
-					return line, true
-				}
+		for line := start; line < len(rendered); line++ {
+			if !renderedLineHasListMarker(rendered[line], marker) {
+				continue
+			}
+			if renderedListWindowContainsText(rendered, line, textKey) {
+				return line, true
 			}
 		}
 		return 0, false
 	}
 
-	for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
-		for line := bounds[0]; line < bounds[1]; line++ {
-			if renderedLineHasListMarker(rendered[line], marker) {
-				return line, true
-			}
+	for line := start; line < len(rendered); line++ {
+		if renderedLineHasListMarker(rendered[line], marker) {
+			return line, true
 		}
 	}
 	return 0, false
@@ -2801,9 +2833,35 @@ func renderedListWindowContainsText(rendered []string, line int, textKey string)
 func renderedLineHasListMarker(line, marker string) bool {
 	trimmed := strings.TrimSpace(line)
 	if marker == "•" {
-		return strings.HasPrefix(trimmed, "• ")
+		return trimmed == "•" || strings.HasPrefix(trimmed, "• ")
 	}
-	return strings.HasPrefix(trimmed, marker+" ")
+	return trimmed == marker || strings.HasPrefix(trimmed, marker+" ")
+}
+
+func precedingRenderedTaskMarkerLine(rendered []string, marker string, line int) (int, bool) {
+	return precedingRenderedMarkerLine(rendered, marker, line, renderedLineHasTaskCheckbox)
+}
+
+func precedingRenderedListMarkerLine(rendered []string, marker string, line int) (int, bool) {
+	return precedingRenderedMarkerLine(rendered, marker, line, func(candidate string) bool {
+		return renderedLineHasListMarker(candidate, marker)
+	})
+}
+
+func precedingRenderedMarkerLine(rendered []string, marker string, line int, matches func(string) bool) (int, bool) {
+	if len(rendered) == 0 {
+		return 0, false
+	}
+	line = clamp(line, 0, len(rendered)-1)
+	for candidate := line; candidate >= 0 && line-candidate <= 6; candidate-- {
+		if matches(rendered[candidate]) {
+			return candidate, true
+		}
+		if strings.TrimSpace(rendered[candidate]) == "" || renderedStructuralLine(rendered[candidate]) {
+			break
+		}
+	}
+	return 0, false
 }
 
 func findRenderedTaskLine(rendered []string, marker, textKey string, cursor int) (int, bool) {
@@ -2813,24 +2871,20 @@ func findRenderedTaskLine(rendered []string, marker, textKey string, cursor int)
 
 	start := clamp(cursor, 0, len(rendered)-1)
 	if textKey != "" {
-		for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
-			for line := bounds[0]; line < bounds[1]; line++ {
-				if !strings.Contains(rendered[line], marker) {
-					continue
-				}
-				if renderedTaskWindowContainsText(rendered, line, textKey) {
-					return line, true
-				}
+		for line := start; line < len(rendered); line++ {
+			if !strings.Contains(rendered[line], marker) {
+				continue
+			}
+			if renderedTaskWindowContainsText(rendered, line, textKey) {
+				return line, true
 			}
 		}
 		return 0, false
 	}
 
-	for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
-		for line := bounds[0]; line < bounds[1]; line++ {
-			if strings.Contains(rendered[line], marker) {
-				return line, true
-			}
+	for line := start; line < len(rendered); line++ {
+		if strings.Contains(rendered[line], marker) {
+			return line, true
 		}
 	}
 	return 0, false
@@ -2869,7 +2923,7 @@ func removeWhitespace(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if unicode.IsSpace(r) {
+		if unicode.IsSpace(r) || r == '↪' {
 			continue
 		}
 		b.WriteRune(r)
@@ -2910,11 +2964,6 @@ func findRenderedLineContaining(rendered []string, key string, cursor int) (int,
 		}
 	}
 	for i := cursor; i < len(rendered); i++ {
-		if strings.Contains(rendered[i], key) {
-			return i, true
-		}
-	}
-	for i := 0; i < cursor; i++ {
 		if strings.Contains(rendered[i], key) {
 			return i, true
 		}
@@ -3416,6 +3465,7 @@ func helpItems() []helpItem {
 		{Key: "?", Name: "help", Description: "open this searchable guide"},
 		{Key: "esc", Name: "close", Description: "close help/search or clear focus"},
 		{Key: "q", Name: "quit", Description: "exit mdpoke"},
+		{Key: "ctrl+c", Name: "quit", Description: "exit mdpoke"},
 	}
 }
 
