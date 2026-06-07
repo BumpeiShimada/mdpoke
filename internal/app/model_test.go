@@ -471,6 +471,58 @@ func TestClickCheckboxDoesNotScrollToIt(t *testing.T) {
 	}
 }
 
+func TestClickWrappedCheckboxRefreshesVisibleContent(t *testing.T) {
+	source := strings.Join([]string{
+		"- [x] 長いチェック項目その一として画面幅を越えるだけの説明文を置く",
+		"- [ ] 長いチェック項目その二としてクリック対象になる説明文を置く",
+		"- [ ] 長いチェック項目その三として後続行の対応を見る説明文を置く",
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "tasks.md")
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := md.Render(source, 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(md.Document{Path: path, Raw: source, Rendered: rendered})
+	model.body.Width = 72
+	model.body.Height = 10
+	model.rebuildContent()
+
+	line := lineContaining(model.contentLines, "その二")
+	if line < 0 {
+		t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+	}
+	start, _, ok := taskCheckboxColumns(model.contentLines[line])
+	if !ok {
+		t.Fatalf("checkbox columns not found in %q", model.contentLines[line])
+	}
+	model.body.SetYOffset(line)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      start,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- [x] 長いチェック項目その二") {
+		t.Fatalf("file was not toggled by click:\n%s", string(data))
+	}
+	if strings.Contains(md.StripANSI(got.body.View()), "[ ] 長いチェック項目その二") {
+		t.Fatalf("visible checkbox did not refresh after click:\n%s", md.StripANSI(got.body.View()))
+	}
+	if !strings.Contains(md.StripANSI(got.body.View()), "[x] 長いチェック項目その二") {
+		t.Fatalf("visible checkbox is missing toggled state:\n%s", md.StripANSI(got.body.View()))
+	}
+}
+
 func TestFileWatchReloadsExternalChanges(t *testing.T) {
 	model, path := taskFixtureModel(t, "# First\n")
 	model.body.Width = 80
@@ -2043,6 +2095,59 @@ func TestSelectedNestedListsPreservesItemBreaks(t *testing.T) {
 	}
 }
 
+func TestSelectedTaskListPreservesChildItemBreaks(t *testing.T) {
+	source := strings.Join([]string{
+		"### ダミー確認セクション",
+		"",
+		"- [x] ダミー項目その一",
+		"  - 補足説明: ダミーの説明文をここに長めに置く。幅が狭くても別行として扱い、次の行と連結しない。",
+		"- [x] ダミー項目その二",
+		"  - 補足説明: 二つ目の説明文をここに長めに置く。同じ接頭辞で始まっても別行として扱う。",
+		"- [x] ダミー項目その三",
+		"  - 補足説明: 三つ目の説明文をここに長めに置く。同じ接頭辞でも前の行に吸い寄せない。",
+	}, "\n") + "\n"
+	rendered, err := md.Render(source, 54)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(md.Document{Raw: source, Rendered: rendered})
+	model.body.Width = 54
+	model.body.Height = 12
+	model.rebuildContent()
+
+	startLine := model.lineForRaw(1)
+	endLine := lastRenderedLineForRaw(model, 8)
+	model.textSelectionStart = selectionPoint{
+		Line:   startLine,
+		Column: selectionLineStartColumn(model.contentLines[startLine]),
+	}
+	model.textSelectionEnd = selectionPoint{
+		Line:   endLine,
+		Column: lipgloss.Width(model.contentLines[endLine]),
+	}
+
+	text, _, ok := model.selectedLineText()
+	if !ok {
+		t.Fatal("expected selected task list text")
+	}
+	normalized := trimLineEndSpaces(text)
+	if strings.Contains(normalized, "ダミー項目その一 • 補足結果") {
+		t.Fatalf("copied task item collapsed into child bullet: %q", normalized)
+	}
+	if strings.Contains(normalized, "次の行と連結しない。 [x] ダミー項目その二") {
+		t.Fatalf("copied child bullet collapsed into next task: %q", normalized)
+	}
+	if !strings.Contains(normalized, "[x] ダミー項目その一\n  • 補足説明") {
+		t.Fatalf("copied task list did not preserve child item break: %q", normalized)
+	}
+	if !strings.Contains(normalized, "別行として扱う。\n[x] ダミー項目その三") {
+		t.Fatalf("copied task list did not preserve task item break: %q", normalized)
+	}
+	if strings.Contains(normalized, "↪") {
+		t.Fatalf("copied task list included visual wrap marker: %q", normalized)
+	}
+}
+
 func TestSelectedExternalLinksKeepsWrappedURLContinuous(t *testing.T) {
 	model, _ := fixtureModelAtWidth(t, 58)
 	startLine := model.lineForRaw(68)
@@ -2107,6 +2212,53 @@ func TestSoftWrapMarkersSkipFirstRenderedContentForRawLine(t *testing.T) {
 	}
 	if !foundMarker {
 		t.Fatal("expected soft-wrap continuation marker in long paragraph")
+	}
+}
+
+func TestSoftWrapMarkersSkipTaskListItems(t *testing.T) {
+	source := strings.Join([]string{
+		"- [x] 長いチェック項目その一として画面幅を越えるだけの説明文を置く",
+		"- [ ] 長いチェック項目その二として行対応を確認する説明文を置く",
+		"- [ ] 長いチェック項目その三として折り返し表示を確認する説明文を置く",
+		"- [ ] 長いチェック項目その四として次の行にも影響しないことを見る",
+		"- [ ] 長いチェック項目その五として最後の項目も普通に表示される",
+	}, "\n") + "\n"
+	rendered, err := md.Render(source, 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(md.Document{Raw: source, Rendered: rendered})
+	model.body.Width = 72
+	model.body.Height = 10
+	model.rebuildContent()
+
+	for _, line := range model.contentLines {
+		if strings.Contains(line, "↪ [") {
+			t.Fatalf("task list item has unexpected wrap marker: %q\nall lines:\n%s", line, strings.Join(model.contentLines, "\n"))
+		}
+	}
+}
+
+func TestSoftWrapMarkersSkipNestedTaskBullets(t *testing.T) {
+	source := strings.Join([]string{
+		"- [x] 長いチェック項目その一として本文が複数行に分かれるだけの説明文を置く",
+		"  - 補足説明: 子要素にも十分に長い説明文を置いて折り返しと箇条書きの組み合わせを確認する。",
+		"- [x] 長いチェック項目その二として本文とチェックボックスが分離する幅を使う",
+		"  - 補足あり。",
+	}, "\n") + "\n"
+	rendered, err := md.Render(source, 96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(md.Document{Raw: source, Rendered: rendered})
+	model.body.Width = 96
+	model.body.Height = 10
+	model.rebuildContent()
+
+	for _, line := range model.contentLines {
+		if strings.Contains(line, "↪ •") || strings.Contains(line, "↪ [") {
+			t.Fatalf("nested task list line has unexpected wrap marker: %q\nall lines:\n%s", line, strings.Join(model.contentLines, "\n"))
+		}
 	}
 }
 

@@ -612,11 +612,17 @@ func (m *Model) rebuildContent() {
 func (m *Model) addSoftWrapContinuationMarkers() {
 	m.softWrapLines = make([]bool, len(m.contentLines))
 	codeContentLines := renderedCodeBlockContentLines(m.contentLines)
+	listRawLines := rawListLineNumbers(m.doc.Raw)
 	for line := 1; line < len(m.contentLines); line++ {
-		if m.rawLineForRendered(line) != m.rawLineForRendered(line-1) {
+		raw := m.rawLineForRendered(line)
+		if raw != m.rawLineForRendered(line-1) {
 			continue
 		}
 		if codeContentLines[line-1] || codeContentLines[line] {
+			continue
+		}
+		if listRawLines[raw] || renderedListLine(m.contentLines[line-1]) || renderedListLine(m.contentLines[line]) {
+			m.softWrapLines[line] = true
 			continue
 		}
 		if strings.TrimSpace(m.contentLines[line-1]) == "" {
@@ -1365,7 +1371,7 @@ func (m *Model) applyFastTaskToggle(index int, nextRaw, nextLine string, rawLine
 	m.stamp = currentFileStamp(m.doc.Path)
 	m.tasks = parseTaskItems(m.doc.Raw)
 	m.rebuildLineIndexes()
-	m.rebuildBaseLinesForRaw(rawLine)
+	m.rebuildBaseLines()
 	m.focusToggledTask(index, scrollToTask)
 	return true
 }
@@ -1884,7 +1890,11 @@ func (m Model) selectedLineSegment(line, startColumn, endColumn int) string {
 	}
 	prefixEnd, ok := wrapContinuationPrefixEndColumn(content)
 	if !ok {
-		return displayColumnSlice(content, startColumn, endColumn)
+		segment := displayColumnSlice(content, startColumn, endColumn)
+		if m.isSoftWrapLine(line) {
+			return strings.TrimLeft(segment, " \t")
+		}
+		return segment
 	}
 	if endColumn <= prefixEnd {
 		return ""
@@ -1996,6 +2006,32 @@ func renderedBlockBoundaryLine(line string) bool {
 
 func renderedStructuralLine(line string) bool {
 	return renderedBlockBoundaryLine(line)
+}
+
+func renderedListLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if loc := renderedTaskCheckboxRE.FindStringIndex(trimmed); loc != nil && loc[0] == 0 {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "• ") || strings.HasPrefix(trimmed, "- ") ||
+		strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
+		return true
+	}
+	return renderedOrderedListMarkerRE.MatchString(trimmed)
+}
+
+func rawListLineNumbers(raw string) map[int]bool {
+	lines := strings.Split(raw, "\n")
+	listLines := make(map[int]bool)
+	for i, line := range lines {
+		if rawListLineRE.MatchString(line) {
+			listLines[i+1] = true
+		}
+	}
+	return listLines
 }
 
 func (m Model) lineSelectionStatus() string {
@@ -2660,8 +2696,24 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 	for i, rawLine := range rawLines {
 		rawNumber := i + 1
 		key := normalizeMarkdownLine(rawLine)
-		if key != "" && len(rendered) > 0 {
-			cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+		taskMarker, taskKey, taskOK := taskLineMapParts(rawLine)
+		listMarker, listKey, listOK := listLineMapParts(rawLine)
+		if len(rendered) > 0 && (key != "" || taskOK) {
+			if taskOK {
+				if line, ok := findRenderedTaskLine(lowerRendered, strings.ToLower(taskMarker), strings.ToLower(taskKey), cursor); ok {
+					cursor = line
+				} else if key != "" {
+					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+				}
+			} else if listOK {
+				if line, ok := findRenderedListLine(lowerRendered, strings.ToLower(listMarker), strings.ToLower(listKey), cursor); ok {
+					cursor = line
+				} else if key != "" {
+					cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+				}
+			} else {
+				cursor = findRenderedLine(lowerRendered, strings.ToLower(key), cursor)
+			}
 			rawHasRenderedContent[rawNumber] = true
 		}
 		rawToRendered[rawNumber] = cursor
@@ -2680,6 +2732,173 @@ func buildLineMaps(raw string, rendered []string) ([]int, []int) {
 	}
 
 	return rawToRendered, renderedToRaw
+}
+
+func taskLineMapParts(line string) (string, string, bool) {
+	matches := taskLineRE.FindStringSubmatch(line)
+	if matches == nil {
+		return "", "", false
+	}
+	marker := "[ ]"
+	if strings.EqualFold(matches[2], "x") {
+		marker = "[x]"
+	}
+	return marker, normalizeMarkdownInlineForLineMap(line[len(matches[0]):]), true
+}
+
+func listLineMapParts(line string) (string, string, bool) {
+	matches := rawListLineRE.FindStringSubmatch(line)
+	if matches == nil {
+		return "", "", false
+	}
+	marker := matches[1]
+	if marker == "-" || marker == "*" || marker == "+" {
+		marker = "•"
+	}
+	return marker, normalizeMarkdownInlineForLineMap(line[len(matches[0]):]), true
+}
+
+func findRenderedListLine(rendered []string, marker, textKey string, cursor int) (int, bool) {
+	if len(rendered) == 0 {
+		return 0, false
+	}
+
+	start := clamp(cursor, 0, len(rendered)-1)
+	if textKey != "" {
+		for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
+			for line := bounds[0]; line < bounds[1]; line++ {
+				if !renderedLineHasListMarker(rendered[line], marker) {
+					continue
+				}
+				if renderedListWindowContainsText(rendered, line, textKey) {
+					return line, true
+				}
+			}
+		}
+		return 0, false
+	}
+
+	for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
+		for line := bounds[0]; line < bounds[1]; line++ {
+			if renderedLineHasListMarker(rendered[line], marker) {
+				return line, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func renderedListWindowContainsText(rendered []string, line int, textKey string) bool {
+	window := renderedLineWindowText(rendered, line, 6, renderedAnyListLine)
+	for _, candidate := range taskLineMapSearchKeys(textKey) {
+		if textContainsFoldedWhitespace(window, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderedLineHasListMarker(line, marker string) bool {
+	trimmed := strings.TrimSpace(line)
+	if marker == "•" {
+		return strings.HasPrefix(trimmed, "• ")
+	}
+	return strings.HasPrefix(trimmed, marker+" ")
+}
+
+func findRenderedTaskLine(rendered []string, marker, textKey string, cursor int) (int, bool) {
+	if len(rendered) == 0 {
+		return 0, false
+	}
+
+	start := clamp(cursor, 0, len(rendered)-1)
+	if textKey != "" {
+		for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
+			for line := bounds[0]; line < bounds[1]; line++ {
+				if !strings.Contains(rendered[line], marker) {
+					continue
+				}
+				if renderedTaskWindowContainsText(rendered, line, textKey) {
+					return line, true
+				}
+			}
+		}
+		return 0, false
+	}
+
+	for _, bounds := range [][2]int{{start, len(rendered)}, {0, start}} {
+		for line := bounds[0]; line < bounds[1]; line++ {
+			if strings.Contains(rendered[line], marker) {
+				return line, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func renderedTaskWindowContainsText(rendered []string, line int, textKey string) bool {
+	window := renderedLineWindowText(rendered, line, 6, renderedLineHasTaskCheckbox)
+	for _, candidate := range taskLineMapSearchKeys(textKey) {
+		if textContainsFoldedWhitespace(window, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderedLineWindowText(rendered []string, line, limit int, boundary func(string) bool) string {
+	stop := min(len(rendered), line+limit)
+	parts := make([]string, 0, stop-line)
+	for next := line; next < stop; next++ {
+		if next > line && boundary(rendered[next]) {
+			break
+		}
+		parts = append(parts, strings.TrimSpace(rendered[next]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func textContainsFoldedWhitespace(haystack, needle string) bool {
+	if strings.Contains(haystack, needle) {
+		return true
+	}
+	return strings.Contains(removeWhitespace(haystack), removeWhitespace(needle))
+}
+
+func removeWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func taskLineMapSearchKeys(key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+
+	keys := []string{key}
+	if lipgloss.Width(key) > 24 {
+		prefix := displayColumnSlice(key, 0, 24)
+		if strings.TrimSpace(prefix) != "" && prefix != key {
+			keys = append(keys, strings.TrimSpace(prefix))
+		}
+	}
+	return keys
+}
+
+func renderedLineHasTaskCheckbox(line string) bool {
+	return strings.Contains(line, "[ ]") || strings.Contains(line, "[x]")
+}
+
+func renderedAnyListLine(line string) bool {
+	return renderedLineHasTaskCheckbox(line) || renderedListLine(line)
 }
 
 func findRenderedLine(rendered []string, key string, cursor int) int {
@@ -2738,10 +2957,13 @@ func lineMapSearchKeys(key string) []string {
 }
 
 var (
-	markdownLinkRE         = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
-	listMarkerRE           = regexp.MustCompile(`^([-*+]|\d+[.)])\s+`)
-	taskLineRE             = regexp.MustCompile(`^(\s*[-*+]\s+\[)([ xX])(\])`)
-	renderedTaskCheckboxRE = regexp.MustCompile(`\[[ xX]\]`)
+	markdownLinkRE              = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	listMarkerRE                = regexp.MustCompile(`^([-*+]|\d+[.)])\s+`)
+	rawListLineRE               = regexp.MustCompile(`^\s*([-*+]|\d+[.)])\s+`)
+	taskMarkerRE                = regexp.MustCompile(`^\[[ xX]\]\s+`)
+	taskLineRE                  = regexp.MustCompile(`^(\s*[-*+]\s+\[)([ xX])(\])`)
+	renderedTaskCheckboxRE      = regexp.MustCompile(`\[[ xX]\]`)
+	renderedOrderedListMarkerRE = regexp.MustCompile(`^\d+[.)]\s+`)
 )
 
 func parseTaskItems(raw string) []taskItem {
@@ -2806,6 +3028,11 @@ func normalizeMarkdownLine(line string) string {
 	line = strings.TrimLeft(line, "#")
 	line = strings.TrimSpace(line)
 	line = listMarkerRE.ReplaceAllString(line, "")
+	line = taskMarkerRE.ReplaceAllString(line, "")
+	return normalizeMarkdownInlineForLineMap(line)
+}
+
+func normalizeMarkdownInlineForLineMap(line string) string {
 	line = normalizeMarkdownLinksForLineMap(line)
 	line = strings.ReplaceAll(line, "`", "")
 	line = strings.Trim(line, "<>")
