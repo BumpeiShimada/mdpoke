@@ -2743,7 +2743,7 @@ func taskLineMapParts(line string) (string, string, bool) {
 	if strings.EqualFold(matches[2], "x") {
 		marker = "[x]"
 	}
-	return marker, normalizeMarkdownInlineForLineMap(line[len(matches[0]):]), true
+	return marker, normalizeMarkdownInlineForListMap(line[len(matches[0]):]), true
 }
 
 func listLineMapParts(line string) (string, string, bool) {
@@ -2755,7 +2755,7 @@ func listLineMapParts(line string) (string, string, bool) {
 	if marker == "-" || marker == "*" || marker == "+" {
 		marker = "•"
 	}
-	return marker, normalizeMarkdownInlineForLineMap(line[len(matches[0]):]), true
+	return marker, normalizeMarkdownInlineForListMap(line[len(matches[0]):]), true
 }
 
 func findRenderedListLine(rendered []string, marker, textKey string, cursor int) (int, bool) {
@@ -2882,15 +2882,7 @@ func taskLineMapSearchKeys(key string) []string {
 	if key == "" {
 		return nil
 	}
-
-	keys := []string{key}
-	if lipgloss.Width(key) > 24 {
-		prefix := displayColumnSlice(key, 0, 24)
-		if strings.TrimSpace(prefix) != "" && prefix != key {
-			keys = append(keys, strings.TrimSpace(prefix))
-		}
-	}
-	return keys
+	return []string{key}
 }
 
 func renderedLineHasTaskCheckbox(line string) bool {
@@ -3033,11 +3025,19 @@ func normalizeMarkdownLine(line string) string {
 }
 
 func normalizeMarkdownInlineForLineMap(line string) string {
+	return normalizeMarkdownInlineForLineMapLimit(line, 48)
+}
+
+func normalizeMarkdownInlineForListMap(line string) string {
+	return normalizeMarkdownInlineForLineMapLimit(line, 128)
+}
+
+func normalizeMarkdownInlineForLineMapLimit(line string, limit int) string {
 	line = normalizeMarkdownLinksForLineMap(line)
 	line = strings.ReplaceAll(line, "`", "")
 	line = strings.Trim(line, "<>")
 	line = strings.Trim(line, "`*_~")
-	line = truncateUTF8Bytes(line, 48)
+	line = truncateUTF8Bytes(line, limit)
 	return strings.TrimSpace(line)
 }
 

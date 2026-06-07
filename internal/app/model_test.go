@@ -523,6 +523,74 @@ func TestClickWrappedCheckboxRefreshesVisibleContent(t *testing.T) {
 	}
 }
 
+func TestClickWrappedCheckboxesToggleOnlyClickedTask(t *testing.T) {
+	source := strings.Join([]string{
+		"- [ ] 共通接頭辞のチェック項目その一として長い説明文を置く",
+		"- [ ] 共通接頭辞のチェック項目その二として長い説明文を置く",
+		"- [ ] 共通接頭辞のチェック項目その三として長い説明文を置く",
+	}, "\n") + "\n"
+
+	tests := []struct {
+		name     string
+		needle   string
+		wantLine string
+	}{
+		{name: "first", needle: "その一", wantLine: "- [x] 共通接頭辞のチェック項目その一"},
+		{name: "second", needle: "その二", wantLine: "- [x] 共通接頭辞のチェック項目その二"},
+		{name: "third", needle: "その三", wantLine: "- [x] 共通接頭辞のチェック項目その三"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tasks.md")
+			if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+				t.Fatal(err)
+			}
+			rendered, err := md.Render(source, 72)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := New(md.Document{Path: path, Raw: source, Rendered: rendered})
+			model.body.Width = 72
+			model.body.Height = 10
+			model.rebuildContent()
+
+			line := lineContaining(model.contentLines, tt.needle)
+			if line < 0 {
+				t.Fatalf("checkbox not rendered: %#v", model.contentLines)
+			}
+			start, _, ok := taskCheckboxColumns(model.contentLines[line])
+			if !ok {
+				t.Fatalf("checkbox columns not found in %q", model.contentLines[line])
+			}
+			model.body.SetYOffset(line)
+
+			next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+				X:      start,
+				Y:      0,
+				Action: tea.MouseActionPress,
+				Button: tea.MouseButtonLeft,
+			}))
+			got := next.(Model)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(data)
+			if !strings.Contains(text, tt.wantLine) {
+				t.Fatalf("clicked task was not toggled:\n%s", text)
+			}
+			if strings.Count(text, "- [x]") != 1 {
+				t.Fatalf("unexpected task toggled; got %d checked tasks:\n%s", strings.Count(text, "- [x]"), text)
+			}
+			if !strings.Contains(md.StripANSI(got.body.View()), strings.TrimPrefix(tt.wantLine, "- ")) {
+				t.Fatalf("visible content did not show clicked task checked:\n%s", md.StripANSI(got.body.View()))
+			}
+		})
+	}
+}
+
 func TestFileWatchReloadsExternalChanges(t *testing.T) {
 	model, path := taskFixtureModel(t, "# First\n")
 	model.body.Width = 80
