@@ -108,6 +108,38 @@ func TestRenderContentFallsBackToFocusedLinkText(t *testing.T) {
 	}
 }
 
+func TestRenderContentStylesNamedExternalLinksLikeBareURLs(t *testing.T) {
+	raw := "[External](https://example.com)\n[Jump](#jump-target)\n"
+	rendered, err := md.Render(raw, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, links := md.ParseStructure([]byte(raw))
+
+	oldBareAutoLinkStyle := bareAutoLinkStyle
+	bareAutoLinkStyle = lipgloss.NewStyle().Transform(func(s string) string { return "[" + s + "]" })
+	defer func() {
+		bareAutoLinkStyle = oldBareAutoLinkStyle
+	}()
+
+	model := New(md.Document{
+		Rendered: rendered,
+		Raw:      raw,
+		Links:    links,
+	})
+
+	content := model.renderContent()
+	if !strings.Contains(content, "[External]") {
+		t.Fatalf("expected named external link text to use bare URL style:\n%s", content)
+	}
+	if strings.Contains(content, "[Jump]") {
+		t.Fatalf("internal anchor link should keep a distinct style:\n%s", content)
+	}
+	if strings.Contains(md.StripANSI(content), "https://example.com") {
+		t.Fatalf("named external link URL should not be visible:\n%s", content)
+	}
+}
+
 func TestRenderContentExtendsBareAutolinkHighlightToCopiedURL(t *testing.T) {
 	url := "https://example.com/path/to/日本語リソース名"
 	oldBareAutoLinkStyle := bareAutoLinkStyle
@@ -2174,6 +2206,58 @@ func TestClickURLCopiesAndShowsModal(t *testing.T) {
 	}
 	if !strings.Contains(got.modalBody, "Copied to clipboard") {
 		t.Fatalf("modalBody = %q, want generic copied message", got.modalBody)
+	}
+}
+
+func TestClickRenderedNamedExternalLinkCopiesHiddenURL(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	raw := "[External](https://example.com)\n"
+	rendered, err := md.Render(raw, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{
+		Links:    links,
+		Rendered: rendered,
+		Raw:      raw,
+	})
+	model.body.Width = 60
+	model.body.Height = 10
+	link := linkByURL(t, links, "https://example.com")
+	x := clickXForLink(t, model, link)
+
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      x,
+		Y:      0,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+	got := next.(Model)
+
+	if got.modalKind != modalMessage {
+		t.Fatalf("modalKind = %d, want message", got.modalKind)
+	}
+	if copied != "https://example.com" {
+		t.Fatalf("copied = %q, want hidden URL", copied)
+	}
+	if strings.Contains(md.StripANSI(got.body.View()), "https://example.com") {
+		t.Fatalf("hidden URL should not be visible in body:\n%s", got.body.View())
 	}
 }
 

@@ -708,6 +708,7 @@ func (m *Model) refreshOutline() {
 func (m *Model) rebuildBaseLines() {
 	m.baseLines = make([]string, len(m.renderedLines))
 	copy(m.baseLines, m.renderedLines)
+	m.styleNamedExternalLinks(m.baseLines)
 	m.styleBareAutoLinks(m.baseLines)
 }
 
@@ -723,6 +724,7 @@ func (m *Model) rebuildBaseLinesForRaw(raw int) {
 	for line := start; line < len(m.baseLines) && m.rawLineForRendered(line) == raw; line++ {
 		m.baseLines[line] = m.renderedLines[line]
 	}
+	m.styleNamedExternalLinksForRaw(m.baseLines, raw)
 	m.styleBareAutoLinksForRaw(m.baseLines, raw)
 }
 
@@ -1909,21 +1911,53 @@ func (m Model) selectedLineSegment(line, startColumn, endColumn int) string {
 		return ""
 	}
 	content := m.contentLines[line]
+	segment := ""
 	if !m.isWrapContinuationLine(line) {
-		return displayColumnSlice(content, startColumn, endColumn)
-	}
-	prefixEnd, ok := wrapContinuationPrefixEndColumn(content)
-	if !ok {
-		segment := displayColumnSlice(content, startColumn, endColumn)
-		if m.isSoftWrapLine(line) {
-			return strings.TrimLeft(segment, " \t")
+		segment = displayColumnSlice(content, startColumn, endColumn)
+	} else {
+		prefixEnd, ok := wrapContinuationPrefixEndColumn(content)
+		if !ok {
+			segment = displayColumnSlice(content, startColumn, endColumn)
+			if m.isSoftWrapLine(line) {
+				segment = strings.TrimLeft(segment, " \t")
+			}
+		} else if endColumn > prefixEnd {
+			segment = displayColumnSlice(content, max(startColumn, prefixEnd), endColumn)
 		}
+	}
+	return m.restoreHiddenExternalLinkURLs(line, segment)
+}
+
+func (m Model) restoreHiddenExternalLinkURLs(line int, segment string) string {
+	if segment == "" {
 		return segment
 	}
-	if endColumn <= prefixEnd {
-		return ""
+	raw := m.rawLineForRendered(line)
+	indexes := m.linksByRaw[raw]
+	cursor := 0
+	for _, linkIndex := range indexes {
+		if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
+			continue
+		}
+		link := m.doc.Links[linkIndex]
+		if !isNamedExternalLink(link) {
+			continue
+		}
+		text := strings.TrimSpace(link.Text)
+		url := strings.TrimSpace(link.URL)
+		if strings.Contains(segment, url) || cursor >= len(segment) {
+			continue
+		}
+		found := strings.Index(segment[cursor:], text)
+		if found < 0 {
+			continue
+		}
+		start := cursor + found
+		replacement := text + " " + url
+		segment = segment[:start] + replacement + segment[start+len(text):]
+		cursor = start + len(replacement)
 	}
-	return displayColumnSlice(content, max(startColumn, prefixEnd), endColumn)
+	return segment
 }
 
 func (m Model) isWrapContinuationLine(line int) bool {
@@ -2115,6 +2149,62 @@ func (m Model) styleBareAutoLinks(lines []string) {
 	for raw, indexes := range m.bareLinksByRaw {
 		m.styleBareAutoLinksForRawIndexes(lines, raw, indexes)
 	}
+}
+
+func (m Model) styleNamedExternalLinks(lines []string) {
+	for raw, indexes := range m.linksByRaw {
+		m.styleNamedExternalLinksForRawIndexes(lines, raw, indexes)
+	}
+}
+
+func (m Model) styleNamedExternalLinksForRaw(lines []string, raw int) {
+	m.styleNamedExternalLinksForRawIndexes(lines, raw, m.linksByRaw[raw])
+}
+
+func (m Model) styleNamedExternalLinksForRawIndexes(lines []string, raw int, indexes []int) {
+	start := m.lineForRaw(raw)
+	if start < 0 || start >= len(lines) {
+		return
+	}
+	for _, linkIndex := range indexes {
+		if linkIndex < 0 || linkIndex >= len(m.doc.Links) {
+			continue
+		}
+		link := m.doc.Links[linkIndex]
+		if !isNamedExternalLink(link) {
+			continue
+		}
+		target := strings.TrimSpace(link.Text)
+		for line := start; line < len(lines) && m.rawLineForRendered(line) == raw; line++ {
+			lines[line] = styleNamedExternalLinkText(lines[line], target)
+		}
+	}
+}
+
+func isNamedExternalLink(link md.Link) bool {
+	text := strings.TrimSpace(link.Text)
+	url := strings.TrimSpace(link.URL)
+	return text != "" && text != url && hasScheme(url)
+}
+
+func styleNamedExternalLinkText(line, target string) string {
+	if target == "" {
+		return line
+	}
+	plain := md.StripANSI(line)
+	offset := 0
+	for offset <= len(plain) {
+		startByte := strings.Index(plain[offset:], target)
+		if startByte < 0 {
+			break
+		}
+		startByte += offset
+		startColumn := lipgloss.Width(plain[:startByte])
+		endColumn := startColumn + lipgloss.Width(target)
+		line = styleANSIVisibleRangePlain(line, startColumn, endColumn, bareAutoLinkStyle)
+		offset = startByte + len(target)
+	}
+	return line
 }
 
 func (m Model) styleBareAutoLinksForRaw(lines []string, raw int) {

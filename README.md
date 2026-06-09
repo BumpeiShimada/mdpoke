@@ -72,6 +72,12 @@ Use `--no-watch` when automatic reloads are not desired, `--max-size` to tighten
 | `Esc` | Cancel the current mode or clear highlights/selection |
 | `q` / `Ctrl+C` | Quit |
 
+## Link Rendering
+
+Bare URLs stay visible and underlined. Named external Markdown links such as `[Label](https://example.com)` render only `Label` with the same visible URL styling; clicking the label copies the hidden URL. Internal anchor links keep a distinct style and still ask for jump confirmation.
+
+Detailed behavior is tracked in [docs/spec-ja.md](docs/spec-ja.md).
+
 ## Safety And Limits
 
 By default, `mdpoke` watches the opened file for changes, refuses symlinked Markdown files, limits reads to 20 MiB, and strips terminal control characters before rendering or parsing links/headings.

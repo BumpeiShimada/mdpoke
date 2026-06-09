@@ -54,6 +54,13 @@ Markdown rendering
 - Outline open and close re-render the document for the new body width.
 - Re-rendering preserves the raw-line anchor at the top of the viewport.
 - Japanese and other wide Unicode text maps to rendered columns correctly.
+- Bare URLs render as visible underlined URL text.
+- Named external Markdown links such as `[Label](https://example.com)` render
+  only the label text, not the destination URL.
+- Named external Markdown link labels use the same visible styling as bare
+  URLs.
+- Code spans and code blocks keep literal `[Label](https://example.com)` text
+  instead of being rewritten as links.
 
 Outline
 -------
@@ -109,6 +116,8 @@ Links and anchors
 -----------------
 
 - External links can be copied by clicking the rendered link text.
+- Clicking a named external Markdown link label copies its hidden destination
+  URL.
 - The clickable area is the visible link text or URL, not the whole line.
 - Clicking between two links does not select either link.
 - Multiple links on one line are selected by horizontal click position.
@@ -119,6 +128,7 @@ Links and anchors
 - `y` copies the focused URL.
 - `y` copies the first URL on the current line when no URL is focused.
 - Internal Markdown anchors open a confirmation modal before jumping.
+- Internal Markdown anchors stay visually distinct from external URL links.
 - Confirming an internal jump scrolls to the target heading.
 - Internal-only links are skipped by URL focus navigation.
 
@@ -140,6 +150,8 @@ Selection and copy
 - Raw list item boundaries copy as newlines.
 - Nested bullet and numbered item boundaries copy as newlines.
 - Task list child item boundaries copy as newlines.
+- Drag-copying a named external Markdown link includes the hidden destination
+  URL in the copied text.
 - Wrapped URLs do not gain inserted spaces when copied.
 - Wrapped code block tokens do not gain inserted spaces when copied.
 - Code block bottom borders remain on a separate copied line.

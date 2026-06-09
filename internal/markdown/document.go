@@ -158,6 +158,7 @@ func Render(markdown string, width int) (string, error) {
 	}
 
 	markdown = SanitizeMarkdownInput(markdown)
+	markdown = hideNamedExternalLinkDestinations(markdown)
 	prepared, blocks := prepareCustomBlocks(markdown, width)
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes([]byte(mdpokeStyleJSON())),
@@ -176,6 +177,107 @@ func Render(markdown string, width int) (string, error) {
 	rendered = replaceCustomBlocks(rendered, blocks)
 	rendered = hardWrapRendered(rendered, width)
 	return strings.TrimRight(rendered, "\n") + "\n", nil
+}
+
+type sourceReplacement struct {
+	start int
+	end   int
+	text  string
+}
+
+func hideNamedExternalLinkDestinations(markdown string) string {
+	source := []byte(markdown)
+	root := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	).Parser().Parse(text.NewReader(source))
+
+	replacements := make([]sourceReplacement, 0)
+	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		link, ok := node.(*ast.Link)
+		if !ok || link.Reference != nil {
+			return ast.WalkContinue, nil
+		}
+		destination := string(link.Destination)
+		if !hasURLScheme(destination) {
+			return ast.WalkContinue, nil
+		}
+		label := strings.TrimSpace(string(link.Text(source)))
+		if label == "" || label == destination {
+			return ast.WalkContinue, nil
+		}
+		_, labelStop := nodeSpan(link)
+		start, end, ok := inlineLinkDestinationRange(source, max(0, link.Pos()), labelStop, destination)
+		if ok {
+			replacements = append(replacements, sourceReplacement{
+				start: start,
+				end:   end,
+				text:  "#mdpoke-external-link",
+			})
+		}
+		return ast.WalkContinue, nil
+	})
+
+	return applySourceReplacements(markdown, replacements)
+}
+
+func inlineLinkDestinationRange(source []byte, linkStart, labelStop int, destination string) (int, int, bool) {
+	if destination == "" || labelStop < 0 || labelStop > len(source) {
+		return 0, 0, false
+	}
+	lineStop := len(source)
+	if newline := bytes.IndexByte(source[labelStop:], '\n'); newline >= 0 {
+		lineStop = labelStop + newline
+	}
+	if linkStart > labelStop {
+		linkStart = labelStop
+	}
+
+	searchStart := min(max(labelStop, 0), lineStop)
+	open := bytes.IndexByte(source[searchStart:lineStop], '(')
+	if open < 0 {
+		return 0, 0, false
+	}
+	destinationSearchStart := searchStart + open + 1
+	for destinationSearchStart < lineStop && unicode.IsSpace(rune(source[destinationSearchStart])) {
+		destinationSearchStart++
+	}
+	if destinationSearchStart < lineStop && source[destinationSearchStart] == '<' {
+		destinationSearchStart++
+	}
+
+	found := bytes.Index(source[destinationSearchStart:lineStop], []byte(destination))
+	if found < 0 {
+		return 0, 0, false
+	}
+	start := destinationSearchStart + found
+	end := start + len(destination)
+	if start < linkStart || end > lineStop {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func applySourceReplacements(source string, replacements []sourceReplacement) string {
+	if len(replacements) == 0 {
+		return source
+	}
+	var b strings.Builder
+	b.Grow(len(source))
+	cursor := 0
+	for _, replacement := range replacements {
+		if replacement.start < cursor || replacement.start < 0 || replacement.end > len(source) || replacement.end < replacement.start {
+			continue
+		}
+		b.WriteString(source[cursor:replacement.start])
+		b.WriteString(replacement.text)
+		cursor = replacement.end
+	}
+	b.WriteString(source[cursor:])
+	return b.String()
 }
 
 func SanitizeMarkdownInput(s string) string {

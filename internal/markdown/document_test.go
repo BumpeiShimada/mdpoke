@@ -62,6 +62,36 @@ func TestRenderSanitizesMarkdownBeforeRendering(t *testing.T) {
 	}
 }
 
+func TestRenderHidesNamedExternalLinkDestination(t *testing.T) {
+	rendered, err := Render("See [Example](https://example.com/path) and https://example.org/bare.\n", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	if !strings.Contains(plain, "Example") {
+		t.Fatalf("expected link text to remain:\n%s", plain)
+	}
+	if strings.Contains(plain, "https://example.com/path") {
+		t.Fatalf("named external link destination should not be rendered:\n%s", plain)
+	}
+	if !strings.Contains(plain, "https://example.org/bare") {
+		t.Fatalf("bare URL should keep rendering as a URL:\n%s", plain)
+	}
+}
+
+func TestRenderDoesNotHideLinkSyntaxInsideCode(t *testing.T) {
+	rendered, err := Render("`[Example](https://example.com/path)`\n", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	if !strings.Contains(plain, "[Example](https://example.com/path)") {
+		t.Fatalf("code span link syntax should remain literal:\n%s", plain)
+	}
+}
+
 func TestLoadRejectsOversizedFile(t *testing.T) {
 	path := writeMarkdownFixture(t, strings.Repeat("a", 33))
 
