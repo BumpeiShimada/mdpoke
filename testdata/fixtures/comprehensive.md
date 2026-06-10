@@ -468,6 +468,8 @@ This section keeps focused regression cases close to the manual fixture without 
 - [x] fixture-checkbox-with-child-checkboxes: parent task with nested checkbox items
   - [ ] fixture-nested-checkbox-pending: nested pending checkbox remains independently focusable
   - [x] fixture-nested-checkbox-complete: nested completed checkbox remains independently focusable
+* [ ] fixture-star-checkbox: star bullet task renders and toggles as a checkbox
++ [x] fixture-plus-checkbox: plus bullet task renders and toggles as a checkbox
 - [ ] fixture-long-checkbox-ja: これは幅の狭い端末で複数行に折り返されることを確認するための長いチェックボックス項目です。クリックしても隣の項目に吸い寄せられず、この項目だけが切り替わる必要があります。
 - [ ] fixture-long-checkbox-ja-second: これは同じ接頭辞と似た長さを持つ二つ目の長いチェックボックス項目です。行対応が前の項目に巻き戻らず、この二つ目の項目に対応する必要があります。
 

@@ -47,6 +47,8 @@ Markdown rendering
   inline code.
 - Ordered list markers keep spacing after the marker.
 - Nested bullets and nested numbered items preserve visual indentation.
+- Task list items render as checkboxes when written with `- [ ]`, `* [ ]`, or
+  `+ [ ]` bullet markers.
 - Long text without spaces hard-wraps at the available width.
 - Ordinary paragraph soft wraps show the continuation marker `↪`.
 - Block quotes, table cells, task list items, and list item continuations do
@@ -97,8 +99,10 @@ Checkboxes
 - `Shift+Tab` focuses the previous checkbox.
 - `Tab` is for checkbox focus, not link focus.
 - When the document has no checkboxes, `Tab` shows a message modal.
+- Checkboxes written with `-`, `*`, or `+` bullet markers are focusable.
 - A focused checkbox toggles with Space.
 - A focused checkbox toggles with Enter.
+- Toggling preserves the raw bullet marker used by the source line.
 - Keyboard toggles scroll the target checkbox into view.
 - Mouse click toggles the clicked checkbox.
 - Mouse click toggles do not auto-scroll the viewport.

@@ -420,6 +420,50 @@ func TestTabAndSpaceToggleCheckboxAndUpdateFile(t *testing.T) {
 	}
 }
 
+func TestAlternateBulletCheckboxesToggleAndPreserveMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker string
+		text   string
+	}{
+		{name: "star with text", marker: "*", text: " Pending"},
+		{name: "plus with text", marker: "+", text: " Pending"},
+		{name: "star empty", marker: "*", text: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model, path := taskFixtureModel(t, fmt.Sprintf("%s [ ]%s\n", tc.marker, tc.text))
+			oldTaskFocusStyle := taskFocusStyle
+			taskFocusStyle = lipgloss.NewStyle().Transform(func(s string) string { return "{" + s + "}" })
+			defer func() {
+				taskFocusStyle = oldTaskFocusStyle
+			}()
+
+			next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyTab}))
+			got := next.(Model)
+			if got.selectedTask != 0 {
+				t.Fatalf("selectedTask = %d, want first checkbox", got.selectedTask)
+			}
+			if !strings.Contains(got.renderContent(), "{[ ]}") {
+				t.Fatalf("expected focused checkbox to be highlighted:\n%s", got.renderContent())
+			}
+
+			next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeySpace}))
+			got = next.(Model)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("%s [x]%s", tc.marker, tc.text)
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("file was not toggled while preserving marker %q:\n%s", tc.marker, string(data))
+			}
+			if got.tasks[0].Checked != true {
+				t.Fatalf("first task Checked = false, want true")
+			}
+		})
+	}
+}
+
 func TestEnterTogglesFocusedCheckbox(t *testing.T) {
 	model, path := taskFixtureModel(t, "- [ ] Pending\n")
 

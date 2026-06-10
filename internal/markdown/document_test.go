@@ -328,6 +328,29 @@ func TestRenderBulletMarkersWhenItemStartsWithInlineCode(t *testing.T) {
 	}
 }
 
+func TestRenderRecognizesAlternateBulletTaskMarkers(t *testing.T) {
+	rendered, err := Render(strings.Join([]string{
+		"* [ ] Star task",
+		"+ [x] Plus task",
+		"* [ ]",
+	}, "\n"), 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := StripANSI(rendered)
+	for _, want := range []string{"[ ] Star task", "[x] Plus task", "[ ]"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected alternate bullet task %q to render as a checkbox:\n%s", want, plain)
+		}
+	}
+	for _, bad := range []string{"* [ ] Star task", "+ [x] Plus task", "* [ ]"} {
+		if strings.Contains(plain, bad) {
+			t.Fatalf("alternate bullet task rendered as literal text %q:\n%s", bad, plain)
+		}
+	}
+}
+
 func TestRenderOrderedListKeepsSpaceAfterMarker(t *testing.T) {
 	rendered, err := Render(strings.Join([]string{
 		"1. First item",
