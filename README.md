@@ -12,11 +12,19 @@
 
 ## Install
 
+With Homebrew (macOS / Linux):
+
 ```sh
 brew install BumpeiShimada/tap/mdpoke
 ```
 
-NB! not sure if the binary for Windows or Linux works yet.
+Or with Go:
+
+```sh
+go install github.com/BumpeiShimada/mdpoke/cmd/mdpoke@latest
+```
+
+Windows is currently untested.
 
 ## Highlights
 

@@ -205,7 +205,7 @@ func hideNamedExternalLinkDestinations(markdown string) string {
 		if !hasURLScheme(destination) {
 			return ast.WalkContinue, nil
 		}
-		label := strings.TrimSpace(string(link.Text(source)))
+		label := strings.TrimSpace(nodeText(link, source))
 		if label == "" || label == destination {
 			return ast.WalkContinue, nil
 		}
@@ -578,7 +578,7 @@ func ParseStructure(source []byte) ([]Heading, []Link) {
 			line := nodeLine(n, lineStarts)
 			heading := Heading{
 				Level:  n.Level,
-				Text:   strings.TrimSpace(string(n.Text(source))),
+				Text:   strings.TrimSpace(nodeText(n, source)),
 				Line:   line,
 				Parent: nearestParent(headingStack, n.Level),
 			}
@@ -596,7 +596,7 @@ func ParseStructure(source []byte) ([]Heading, []Link) {
 			line, column := offsetPosition(start, lineStarts)
 			_, endColumn := offsetPosition(stop, lineStarts)
 			links = append(links, Link{
-				Text:        strings.TrimSpace(string(n.Text(source))),
+				Text:        strings.TrimSpace(nodeText(n, source)),
 				URL:         string(n.Destination),
 				Line:        line,
 				StartColumn: column,
@@ -619,6 +619,25 @@ func ParseStructure(source []byte) ([]Heading, []Link) {
 	})
 
 	return outline, expandBareAutoLinks(source, lineStarts, links)
+}
+
+// nodeText replaces the deprecated ast.Node.Text by concatenating the text
+// segments of a node's descendants.
+func nodeText(node ast.Node, source []byte) string {
+	var buf bytes.Buffer
+	_ = ast.Walk(node, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch t := n.(type) {
+		case *ast.Text:
+			buf.Write(t.Value(source))
+		case *ast.String:
+			buf.Write(t.Value)
+		}
+		return ast.WalkContinue, nil
+	})
+	return buf.String()
 }
 
 func expandBareAutoLinks(source []byte, lineStarts []int, links []Link) []Link {

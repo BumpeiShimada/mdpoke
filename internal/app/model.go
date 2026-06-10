@@ -306,11 +306,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	var outlineCmd tea.Cmd
 	if m.outlineVisible {
-		m.outline, cmd = m.outline.Update(msg)
+		m.outline, outlineCmd = m.outline.Update(msg)
 	}
 	m.body, cmd = m.body.Update(msg)
-	return m, cmd
+	return m, tea.Batch(outlineCmd, cmd)
 }
 
 func (m *Model) clearLeftMousePressState() {
@@ -411,12 +412,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	var cmd tea.Cmd
+	var cmd, outlineCmd tea.Cmd
 	if m.outlineVisible {
-		m.outline, cmd = m.outline.Update(msg)
+		m.outline, outlineCmd = m.outline.Update(msg)
 	}
 	m.body, cmd = m.body.Update(msg)
-	return m, cmd
+	return m, tea.Batch(outlineCmd, cmd)
 }
 
 func (m Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -719,22 +720,6 @@ func (m *Model) rebuildBaseLines() {
 	copy(m.baseLines, m.renderedLines)
 	m.styleNamedExternalLinks(m.baseLines)
 	m.styleBareAutoLinks(m.baseLines)
-}
-
-func (m *Model) rebuildBaseLinesForRaw(raw int) {
-	if len(m.baseLines) != len(m.renderedLines) {
-		m.rebuildBaseLines()
-		return
-	}
-	start := m.lineForRaw(raw)
-	if start < 0 || start >= len(m.baseLines) {
-		return
-	}
-	for line := start; line < len(m.baseLines) && m.rawLineForRendered(line) == raw; line++ {
-		m.baseLines[line] = m.renderedLines[line]
-	}
-	m.styleNamedExternalLinksForRaw(m.baseLines, raw)
-	m.styleBareAutoLinksForRaw(m.baseLines, raw)
 }
 
 func (m *Model) rebuildLineIndexes() {
@@ -2166,10 +2151,6 @@ func (m Model) styleNamedExternalLinks(lines []string) {
 	}
 }
 
-func (m Model) styleNamedExternalLinksForRaw(lines []string, raw int) {
-	m.styleNamedExternalLinksForRawIndexes(lines, raw, m.linksByRaw[raw])
-}
-
 func (m Model) styleNamedExternalLinksForRawIndexes(lines []string, raw int, indexes []int) {
 	start := m.lineForRaw(raw)
 	if start < 0 || start >= len(lines) {
@@ -2214,10 +2195,6 @@ func styleNamedExternalLinkText(line, target string) string {
 		offset = startByte + len(target)
 	}
 	return line
-}
-
-func (m Model) styleBareAutoLinksForRaw(lines []string, raw int) {
-	m.styleBareAutoLinksForRawIndexes(lines, raw, m.bareLinksByRaw[raw])
 }
 
 func (m Model) styleBareAutoLinksForRawIndexes(lines []string, raw int, indexes []int) {
@@ -2276,26 +2253,6 @@ func (m Model) linkIndexesForRenderedPosition(renderedLine, rawLine int) []int {
 		}
 	}
 	return indexes
-}
-
-func styleBareAutoLink(line, target string) string {
-	if target == "" {
-		return line
-	}
-	plain := md.StripANSI(line)
-	offset := 0
-	for offset <= len(plain) {
-		segment, segmentStart, segmentEnd, ok := bestLinkSegmentInLine(plain[offset:], target)
-		if !ok {
-			break
-		}
-		startByte := offset + segmentStart
-		start := lipgloss.Width(plain[:startByte])
-		end := start + lipgloss.Width(segment)
-		line = styleANSIVisibleRangePlain(line, start, end, bareAutoLinkStyle)
-		offset += segmentEnd
-	}
-	return line
 }
 
 func styleFocusedTaskCheckbox(line string) string {
@@ -3212,14 +3169,6 @@ func truncateUTF8Bytes(s string, limit int) string {
 		return ""
 	}
 	return s[:last]
-}
-
-func styleLineRange(line string, start, end int, style lipgloss.Style) string {
-	if start < 0 || end <= start || start >= len(line) {
-		return line
-	}
-	end = min(end, len(line))
-	return line[:start] + style.Render(line[start:end]) + line[end:]
 }
 
 func styleDisplayRangePlain(line string, start, end int, style lipgloss.Style) string {

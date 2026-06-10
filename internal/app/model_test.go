@@ -3410,7 +3410,7 @@ func TestDragSelectTextSkipsVisualLeftMargin(t *testing.T) {
 		Action: tea.MouseActionMotion,
 		Button: tea.MouseButtonLeft,
 	}))
-	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+	_, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
 		X:      8,
 		Y:      1,
 		Action: tea.MouseActionRelease,
