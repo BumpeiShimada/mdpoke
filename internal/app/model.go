@@ -228,10 +228,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.WindowSizeMsg:
+		wasReady := m.ready
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		m.resize()
+		m.resizePreservingAnchor(wasReady)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -507,6 +508,10 @@ func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) resize() {
+	m.resizePreservingAnchor(true)
+}
+
+func (m *Model) resizePreservingAnchor(preserveAnchor bool) {
 	topRaw := m.rawLineForRendered(m.body.YOffset)
 	m.clearLineSelection()
 
@@ -528,7 +533,11 @@ func (m *Model) resize() {
 	m.outline.Width = min(outlineWidth, max(20, m.width/2))
 	m.outline.Height = contentHeight
 	m.rebuildContent()
-	m.body.SetYOffset(clamp(m.lineForRaw(topRaw), 0, max(0, len(m.renderedLines)-1)))
+	if preserveAnchor {
+		m.body.SetYOffset(clamp(m.lineForRaw(topRaw), 0, max(0, len(m.renderedLines)-1)))
+	} else {
+		m.body.GotoTop()
+	}
 }
 
 func watchFileCmd() tea.Cmd {

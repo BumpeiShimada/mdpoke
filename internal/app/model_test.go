@@ -545,6 +545,58 @@ func TestClickCheckboxTogglesIt(t *testing.T) {
 	}
 }
 
+func TestInitialWindowResizeKeepsRenderedCheckboxClicksAligned(t *testing.T) {
+	source := strings.Join([]string{
+		"- [ ] dash task",
+		"* [ ] star task",
+		"+ [ ] plus task",
+	}, "\n") + "\n"
+	model, path := taskFixtureModel(t, source)
+
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	got := next.(Model)
+	if got.body.YOffset != 0 {
+		t.Fatalf("initial YOffset after first resize = %d, want 0", got.body.YOffset)
+	}
+
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "dash", text: "dash task", want: "- [x] dash task"},
+		{name: "star", text: "star task", want: "* [x] star task"},
+		{name: "plus", text: "plus task", want: "+ [x] plus task"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := lineContaining(got.contentLines, tc.text)
+			if line < 0 {
+				t.Fatalf("checkbox row %q not rendered: %#v", tc.text, got.contentLines)
+			}
+			start, _, ok := taskCheckboxColumns(got.contentLines[line])
+			if !ok {
+				t.Fatalf("checkbox columns not found in %q", got.contentLines[line])
+			}
+
+			next, _ = got.Update(tea.MouseMsg(tea.MouseEvent{
+				X:      start,
+				Y:      line - got.body.YOffset,
+				Action: tea.MouseActionPress,
+				Button: tea.MouseButtonLeft,
+			}))
+			got = next.(Model)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), tc.want) {
+				t.Fatalf("file did not toggle %s checkbox:\n%s", tc.name, string(data))
+			}
+		})
+	}
+}
+
 func TestReleaseOnlyCheckboxClickTogglesIt(t *testing.T) {
 	model, path := taskFixtureModel(t, "- [ ] Pending\n")
 	model.body.Width = 60
