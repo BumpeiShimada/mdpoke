@@ -358,6 +358,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y":
 		m.copySelectedLink()
 		return m, nil
+	case "u":
+		m.focusNextLink(1)
+		return m, nil
+	case "U":
+		m.focusNextLink(-1)
+		return m, nil
 	case " ":
 		m.toggleSelectedTask()
 		return m, nil
@@ -513,13 +519,16 @@ func (m *Model) resize() {
 }
 
 func (m *Model) resizePreservingAnchor(preserveAnchor bool) {
+	wasTop := m.body.YOffset == 0
 	topRaw := m.rawLineForRendered(m.body.YOffset)
 	m.clearLineSelection()
 
 	contentHeight := max(1, m.height-footerHeight)
 	contentWidth := max(20, m.width)
 	if m.outlineVisible {
-		contentWidth = max(20, m.width-outlineWidth-1)
+		// The divider style renders two columns wide: one content column
+		// plus its right border.
+		contentWidth = max(20, m.width-outlineWidth-2)
 	}
 
 	renderedDoc, err := m.doc.Render(max(20, contentWidth-2))
@@ -534,7 +543,7 @@ func (m *Model) resizePreservingAnchor(preserveAnchor bool) {
 	m.outline.Width = min(outlineWidth, max(20, m.width/2))
 	m.outline.Height = contentHeight
 	m.rebuildContent()
-	if preserveAnchor {
+	if preserveAnchor && !wasTop {
 		m.body.SetYOffset(clamp(m.lineForRaw(topRaw), 0, max(0, len(m.renderedLines)-1)))
 	} else {
 		m.body.GotoTop()
@@ -595,7 +604,6 @@ func (m *Model) reloadDocumentFromDisk(status string) {
 	options.Width = width
 	doc, err := md.LoadWithOptions(m.doc.Path, options)
 	if err != nil {
-		m.err = err
 		m.status = fmt.Sprintf("reload failed: %s", md.SanitizeMarkdownInput(err.Error()))
 		return
 	}
@@ -897,10 +905,9 @@ func wrapOutlineLine(line, prefix string, width int) []string {
 	out := make([]string, 0, len(first))
 	out = append(out, first[0])
 	continuationWidth := max(1, width-lipgloss.Width(prefix))
-	for _, segment := range first[1:] {
-		for _, wrapped := range wrapDisplayHard(segment, continuationWidth) {
-			out = append(out, prefix+wrapped)
-		}
+	rest := strings.Join(first[1:], "")
+	for _, wrapped := range wrapDisplayHard(rest, continuationWidth) {
+		out = append(out, prefix+wrapped)
 	}
 	return out
 }
@@ -3507,6 +3514,7 @@ func helpItems() []helpItem {
 		{Key: "tab", Name: "checkboxes", Description: "focus the next checkbox"},
 		{Key: "shift+tab", Name: "checkboxes", Description: "focus the previous checkbox"},
 		{Key: "y", Name: "copy", Description: "copy selected text, focused URL, or current-line URL"},
+		{Key: "u / U", Name: "links", Description: "focus the next or previous URL link"},
 		{Key: "mouse wheel", Name: "scroll", Description: "scroll the active text pane"},
 		{Key: "drag", Name: "select", Description: "select rendered text for copying"},
 		{Key: "click", Name: "actions", Description: "toggle a checkbox, copy a URL, or confirm an internal jump"},

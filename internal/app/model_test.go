@@ -1023,14 +1023,17 @@ func TestFileWatchRejectsSymlinkReplacementByDefault(t *testing.T) {
 	next, _ := model.Update(fileWatchMsg{})
 	got := next.(Model)
 
-	if got.err == nil {
-		t.Fatal("expected reload error after symlink replacement")
+	if got.err != nil {
+		t.Fatalf("reload failure must keep the current document view, got err: %v", got.err)
 	}
 	if !strings.Contains(got.status, "symlink") {
 		t.Fatalf("status = %q, want symlink rejection", got.status)
 	}
 	if strings.Contains(got.doc.Raw, "Replacement") {
 		t.Fatalf("doc reloaded symlink target despite default rejection:\n%s", got.doc.Raw)
+	}
+	if !strings.Contains(got.doc.Raw, "Original") {
+		t.Fatalf("doc lost current content after failed reload:\n%s", got.doc.Raw)
 	}
 }
 
@@ -1057,14 +1060,17 @@ func TestFileWatchReloadHonorsMaxSizeOption(t *testing.T) {
 	next, _ := model.Update(fileWatchMsg{})
 	got := next.(Model)
 
-	if got.err == nil {
-		t.Fatal("expected reload error for oversized file")
+	if got.err != nil {
+		t.Fatalf("reload failure must keep the current document view, got err: %v", got.err)
 	}
 	if !strings.Contains(got.status, "too large") {
 		t.Fatalf("status = %q, want too large", got.status)
 	}
 	if strings.Contains(got.doc.Raw, "Large") {
 		t.Fatalf("doc reloaded oversized content:\n%s", got.doc.Raw)
+	}
+	if !strings.Contains(got.doc.Raw, "Small") {
+		t.Fatalf("doc lost current content after failed reload:\n%s", got.doc.Raw)
 	}
 }
 
@@ -4341,4 +4347,102 @@ func newLargeInteractionModel(itemCount int) Model {
 		Rendered: strings.Join(renderedLines, "\n") + "\n",
 		Raw:      strings.Join(rawLines, "\n") + "\n",
 	})
+}
+
+func TestUKeyFocusesNextLinkAndYCopiesIt(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	model := New(md.Document{
+		Rendered: "First https://example.com/one here\nSecond https://example.com/two there\n",
+		Raw:      "First https://example.com/one here\nSecond https://example.com/two there\n",
+		Links: []md.Link{
+			{Text: "https://example.com/one", URL: "https://example.com/one", Line: 1},
+			{Text: "https://example.com/two", URL: "https://example.com/two", Line: 2},
+		},
+	})
+	model.body.Width = 80
+	model.body.Height = 10
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'u'}}))
+	got := next.(Model)
+	if got.selectedLink != 0 {
+		t.Fatalf("selectedLink after u = %d, want 0", got.selectedLink)
+	}
+
+	next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'u'}}))
+	got = next.(Model)
+	if got.selectedLink != 1 {
+		t.Fatalf("selectedLink after second u = %d, want 1", got.selectedLink)
+	}
+
+	next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'U'}}))
+	got = next.(Model)
+	if got.selectedLink != 0 {
+		t.Fatalf("selectedLink after U = %d, want 0", got.selectedLink)
+	}
+
+	next, _ = got.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'y'}}))
+	got = next.(Model)
+	if copied != "https://example.com/one" {
+		t.Fatalf("y copied %q, want focused URL", copied)
+	}
+}
+
+func TestOutlineOpenViewFitsWindowWidth(t *testing.T) {
+	longHeading := strings.Repeat("AAAA0 BBBB1 CCCC2 DDDD3 EEEE4 FFFF5 ", 4)
+	raw := "# Top\n\n## " + longHeading + "\n\nbody text\n"
+	rendered, err := md.Render(raw, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+	model.outlineVisible = true
+	model.resize()
+
+	joined := ""
+	for _, line := range strings.Split(model.View(), "\n") {
+		if width := lipgloss.Width(md.StripANSI(line)); width > 100 {
+			t.Fatalf("view line exceeds window width: %d > 100: %q", width, md.StripANSI(line))
+		}
+		if idx := strings.Index(md.StripANSI(line), "│"); idx >= 0 {
+			joined += strings.TrimRight(md.StripANSI(line)[idx+len("│"):], " ")
+		}
+	}
+	compact := strings.ReplaceAll(strings.ReplaceAll(joined, " ", ""), "\n", "")
+	want := strings.ReplaceAll(longHeading, " ", "")
+	if !strings.Contains(compact, want) {
+		t.Fatalf("outline pane lost heading characters:\n%s", compact)
+	}
+}
+
+func TestEscAtTopDoesNotScroll(t *testing.T) {
+	raw := "# Top\n\n" + strings.Repeat("Filler line content.\n\n", 40)
+	rendered, err := md.Render(raw, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+	if model.body.YOffset != 0 {
+		t.Fatalf("initial YOffset = %d, want 0", model.body.YOffset)
+	}
+
+	next, _ = model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	got := next.(Model)
+	if got.body.YOffset != 0 {
+		t.Fatalf("YOffset after esc at top = %d, want 0", got.body.YOffset)
+	}
 }

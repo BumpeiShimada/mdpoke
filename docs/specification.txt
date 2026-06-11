@@ -129,6 +129,7 @@ Links and anchors
 - Non-ASCII bare URLs are copied through the full URL.
 - Wrapped bare URL continuations remain clickable.
 - Link highlighting matches the URL that will be copied.
+- `u` and `U` move URL link focus to the next or previous link.
 - `y` copies the focused URL.
 - `y` copies the first URL on the current line when no URL is focused.
 - Internal Markdown anchors open a confirmation modal before jumping.

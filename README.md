@@ -73,6 +73,7 @@ Use `--no-watch` when automatic reloads are not desired, `--max-size` to tighten
 | `n` / `N` | Move to next / previous search match |
 | `Tab` / `Shift+Tab` | Focus next / previous checkbox |
 | `y` | Copy the focused link, or the first link on the current line |
+| `u` / `U` | Focus the next / previous URL link |
 | Mouse wheel | Scroll |
 | Drag | Select rendered text; release to copy it immediately |
 | Click | Toggle a checkbox, copy an external link, or confirm an internal Markdown jump when clicking the rendered link text |
