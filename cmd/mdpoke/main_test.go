@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -187,5 +188,40 @@ func TestRunSanitizesLoadErrors(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "[2J") {
 		t.Fatalf("stderr = %q, want harmless escaped text payload", stderr.String())
+	}
+}
+
+func TestRunRejectsUnknownFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"--bogus", "doc.md"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "bogus") {
+		t.Fatalf("stderr = %q, want unknown flag message", stderr.String())
+	}
+}
+
+func TestRunRejectsInvalidInputWithExitCode2(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.md")
+	if err := os.WriteFile(target, []byte("# T\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{link}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 for invalid input", code)
+	}
+	if !strings.Contains(stderr.String(), "symlink") {
+		t.Fatalf("stderr = %q, want symlink rejection", stderr.String())
 	}
 }

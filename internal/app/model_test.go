@@ -4446,3 +4446,222 @@ func TestEscAtTopDoesNotScroll(t *testing.T) {
 		t.Fatalf("YOffset after esc at top = %d, want 0", got.body.YOffset)
 	}
 }
+
+func TestReloadFailureKeepsDocumentVisibleInView(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Original\n\nVisible body line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := md.LoadWithOptions(path, md.LoadOptions{Width: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewWithOptions(doc, Options{})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+	model.stamp = currentFileStamp(path)
+
+	target := filepath.Join(dir, "replacement.md")
+	if err := os.WriteFile(target, []byte("# Replacement\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	next, _ = model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	view := md.StripANSI(got.View())
+	if !strings.Contains(view, "Visible body line") {
+		t.Fatal("view dropped the current document content after a failed reload")
+	}
+	if !strings.Contains(view, "reload failed") {
+		t.Fatalf("view footer missing reload failure status:\n%s", view)
+	}
+	if strings.Contains(view, "render error") {
+		t.Fatal("view replaced the document with a render error screen")
+	}
+}
+
+func TestReloadRecoversAfterFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Original\n\nFirst body\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := md.LoadWithOptions(path, md.LoadOptions{Width: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewWithOptions(doc, Options{})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+	model.stamp = currentFileStamp(path)
+
+	target := filepath.Join(dir, "replacement.md")
+	if err := os.WriteFile(target, []byte("# Replacement\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	next, _ = model.Update(fileWatchMsg{})
+	model = next.(Model)
+	if !strings.Contains(model.status, "reload failed") {
+		t.Fatalf("status = %q, want reload failure", model.status)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# Original\n\nRestored body\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	next, _ = model.Update(fileWatchMsg{})
+	got := next.(Model)
+
+	if !strings.Contains(got.doc.Raw, "Restored body") {
+		t.Fatalf("doc did not recover after the file was restored:\n%s", got.doc.Raw)
+	}
+	if got.status != "reloaded" {
+		t.Fatalf("status = %q, want reloaded", got.status)
+	}
+	if got.err != nil {
+		t.Fatalf("err = %v, want nil after recovery", got.err)
+	}
+}
+
+func TestURLFocusGuideHintsMatchKeyBindings(t *testing.T) {
+	model := New(md.Document{
+		Rendered: "Link https://example.com/one here\n",
+		Raw:      "Link https://example.com/one here\n",
+		Links: []md.Link{
+			{Text: "https://example.com/one", URL: "https://example.com/one", Line: 1},
+		},
+	})
+	model.body.Width = 80
+	model.body.Height = 10
+
+	next, _ := model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'u'}}))
+	got := next.(Model)
+	if got.selectedLink < 0 {
+		t.Fatal("u key did not focus a URL link")
+	}
+
+	hints := strings.Join(got.guideItems(), "  ")
+	for _, want := range []string{"u next url", "U prev url", "y copy", "esc exit url"} {
+		if !strings.Contains(hints, want) {
+			t.Fatalf("URL focus hints %q missing %q", hints, want)
+		}
+	}
+	if strings.Contains(hints, "tab next url") {
+		t.Fatalf("URL focus hints %q claim tab moves URL focus, but tab focuses checkboxes", hints)
+	}
+}
+
+func TestEscKeepsScrollPositionMidDocument(t *testing.T) {
+	raw := "# Top\n\n" + strings.Repeat("Plain filler line.\n\n", 40)
+	rendered, err := md.Render(raw, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(raw))
+	model := New(md.Document{Raw: raw, Rendered: rendered, Outline: outline, Links: links})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+
+	model.body.SetYOffset(12)
+	before := model.rawLineForRendered(model.body.YOffset)
+
+	next, _ = model.Update(tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	got := next.(Model)
+	after := got.rawLineForRendered(got.body.YOffset)
+	if after != before {
+		t.Fatalf("esc moved the top raw line %d -> %d", before, after)
+	}
+}
+
+func TestClickNonASCIIURLCopiesWhenScrolled(t *testing.T) {
+	oldClipboardWrite := clipboardWrite
+	var copied string
+	clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	defer func() {
+		clipboardWrite = oldClipboardWrite
+	}()
+
+	url := "https://example.com/パス/日本語?q=テスト"
+	var lines []string
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, fmt.Sprintf("filler %d", i))
+	}
+	lines = append(lines, "こちら: "+url+" end")
+	content := strings.Join(lines, "\n") + "\n"
+	model := New(md.Document{
+		Links: []md.Link{
+			{Text: url, URL: url, Line: 21},
+		},
+		Rendered: content,
+		Raw:      content,
+	})
+	model.body.Width = 90
+	model.body.Height = 10
+	model.body.SetYOffset(15)
+
+	clickY := 20 - 15
+	clickX := lipgloss.Width("こちら: ") + lipgloss.Width("https://example.com/")
+	next, _ := model.Update(tea.MouseMsg(tea.MouseEvent{
+		X:      clickX,
+		Y:      clickY,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}))
+	next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+		X:      clickX,
+		Y:      clickY,
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+	}))
+
+	if copied != url {
+		t.Fatalf("copied = %q, want full non-ASCII URL while scrolled", copied)
+	}
+	_ = next
+}
+
+func TestViewNeverEmitsFileDerivedTerminalControls(t *testing.T) {
+	raw := "# T\n\nOSC \x1b]0;evil\x07 BEL\x07 CSI \x1b[2J DEL\x7f end\n"
+	sanitized := md.SanitizeMarkdownInput(raw)
+	rendered, err := md.Render(sanitized, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, links := md.ParseStructure([]byte(sanitized))
+	model := New(md.Document{Raw: sanitized, Rendered: rendered, Outline: outline, Links: links})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+
+	view := model.View()
+	if strings.Contains(view, "\x1b]") {
+		t.Fatal("view emits an OSC sequence derived from file content")
+	}
+	if strings.Contains(view, "\a") {
+		t.Fatal("view emits a BEL derived from file content")
+	}
+	if strings.Contains(view, "\x7f") {
+		t.Fatal("view emits a DEL derived from file content")
+	}
+	if !strings.Contains(md.StripANSI(view), "]0;evil") {
+		t.Fatal("sanitized payload text should remain visible as harmless characters")
+	}
+}

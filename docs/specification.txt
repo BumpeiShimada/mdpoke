@@ -5,6 +5,10 @@ This document records the expected behavior derived from the README and the
 closed issue history. It is intentionally written as a checklist so future
 changes can be reviewed against it.
 
+Every item outside "Known non-unit-test boundaries" is enforced by the Go
+test suite; running `go test ./...` verifies the whole checklist without
+manual terminal testing.
+
 CLI and startup
 ---------------
 
