@@ -975,7 +975,7 @@ func (m Model) guideItems() []string {
 		items = []string{"space toggle", "enter toggle", "tab next box", "esc exit box"}
 	}
 	if m.selectedLink >= 0 {
-		items = []string{"y copy", "tab next url", "esc exit url"}
+		items = []string{"y copy", "u next url", "U prev url", "esc exit url"}
 		if m.focusedLinkCanJump() {
 			items = append([]string{"enter jump"}, items...)
 		}
